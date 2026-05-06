@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.pyc
+
+# Local data — scraped posts, user state, backups
+posts_*.csv
+posts.csv
+*.csv.bak
+all_posts.json
+bookmarks.json
+stella_bookmarks.json
+stella_seen.json
+
+# Logs
+*.log
+
+# Update staging files
+*.stella_pending
+
+# OS / editor / tooling
+.DS_Store
+.vscode/
+.idea/
+.claude/
