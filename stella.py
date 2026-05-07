@@ -20,7 +20,7 @@ import random
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
-__version__ = "1.0.1"
+__version__ = "1.0.2"
 
 GITHUB_OWNER = "0xc0d"
 GITHUB_REPO = "stella"
@@ -2366,37 +2366,91 @@ DANCE_FRAMES = [
 ]
 
 
+def _truncate_to_width(s: str, width: int) -> str:
+    return s if len(s) <= width else s[: max(0, width - 1)] + "…"
+
+
 def dance_for_stella():
+    """Centered modal popup with an animated ASCII dancer + speech bubble."""
+    cols, rows = term_size()
     quote = random.choice(STELLA_QUOTES)
-    for i in range(10):
+
+    inner_w = max(40, min(72, len(quote) + 8))
+    inner_h = 9
+    box_w = inner_w + 2
+    box_h = inner_h + 2
+
+    if cols < box_w + 2 or rows < box_h + 2:
+        # Terminal too small for a centered modal — fall back to top-anchored
         clear_screen()
         print()
+        print(c(quote, "title", "bold"))
         print()
+        for line in DANCE_FRAMES[0]:
+            print(c(line, "accent", "bold"))
         print()
-        for line in DANCE_FRAMES[i % len(DANCE_FRAMES)]:
-            print("        " + c(line, "accent", "bold"))
-        print()
-        notes = ["~♪~", " ♫ ", "~♬ ", " ♩~"][i % 4]
-        print("           " + c(notes, "title", "bold"))
-        time.sleep(0.18)
+        print(c("(press any key)", "dim"))
+        read_key()
+        return
 
+    quote = _truncate_to_width(quote, inner_w - 4)
+
+    top = max(1, (rows - box_h) // 2)
+    left = max(1, (cols - box_w) // 2)
+
+    def at(r: int, col: int):
+        sys.stdout.write(f"\033[{r};{col}H")
+
+    def write(s: str):
+        sys.stdout.write(s)
+
+    write("\033[?25l")  # hide cursor
     clear_screen()
-    pad = max(36, len(quote) + 4)
-    bubble_top = "    .-" + "-" * pad + "-."
-    bubble_mid = "    | " + quote.ljust(pad) + " |"
-    bubble_bot = "    '-" + "-" * pad + "-'"
-    print()
-    print(c(bubble_top, "accent"))
-    print(c(bubble_mid, "title", "bold"))
-    print(c(bubble_bot, "accent"))
-    print(c("              \\", "dim"))
-    print(c("               \\", "dim"))
-    print(c("                 \\o/   ~♪~", "accent", "bold"))
-    print(c("                  |", "accent", "bold"))
-    print(c("                 / \\", "accent", "bold"))
-    print()
-    print(c("    (press any key)", "dim"))
+
+    # Border (rounded)
+    border_top = "╭" + "─" * inner_w + "╮"
+    border_bot = "╰" + "─" * inner_w + "╯"
+    blank_row = "│" + " " * inner_w + "│"
+    at(top, left);          write(c(border_top, "accent"))
+    for i in range(1, box_h - 1):
+        at(top + i, left);  write(c(blank_row, "accent"))
+    at(top + box_h - 1, left); write(c(border_bot, "accent"))
+
+    # Speech line (row 2 inside the box)
+    quote_left = left + 1 + (inner_w - len(quote)) // 2
+    at(top + 2, quote_left)
+    write(c(quote, "title", "bold"))
+
+    # Dancer area: 3 lines, centered, starts at inner row 4
+    fig_w = max(len(line.rstrip()) for frame in DANCE_FRAMES for line in frame)
+    fig_top = top + 4
+    fig_left = left + 1 + (inner_w - fig_w) // 2
+
+    notes_seq = ["~♪~", " ♫ ", "~♬ ", " ♩ "]
+    for i in range(12):
+        frame = DANCE_FRAMES[i % len(DANCE_FRAMES)]
+        for ln_idx, line in enumerate(frame):
+            at(fig_top + ln_idx, fig_left)
+            write(c(line.ljust(fig_w), "accent", "bold"))
+        # Notes row, animated
+        notes = notes_seq[i % len(notes_seq)]
+        at(fig_top + 3, fig_left + 1)
+        write(c(notes, "title", "bold"))
+        sys.stdout.flush()
+        time.sleep(0.16)
+
+    # Hint
+    hint = "(press any key)"
+    at(top + box_h - 2, left + 1 + (inner_w - len(hint)) // 2)
+    write(c(hint, "dim"))
+
+    # Park cursor below the box and flush
+    at(min(rows, top + box_h + 1), 1)
+    sys.stdout.flush()
+
     read_key()
+    write("\033[?25h")  # show cursor
+    sys.stdout.flush()
 
 
 # ---------------------------------------------------------------------------
