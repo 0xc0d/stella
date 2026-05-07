@@ -16,17 +16,19 @@ import shutil
 import calendar
 import time
 import threading
+import random
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
-__version__ = "1.0.0"
+__version__ = "1.0.1"
 
 GITHUB_OWNER = "0xc0d"
 GITHUB_REPO = "stella"
 UPDATE_BRANCH = "main"
 UPDATE_FILES = ["stella.py", "scraper.py", "Stella.cmd",
                 "repair_text.py", "backfill.py"]
-UPDATE_CHECK_INTERVAL_SEC = 6 * 3600
+UPDATE_CHECK_INTERVAL_SEC = 10 * 60
+UPDATE_RETRY_INTERVAL_SEC = 60
 
 from scraper import SITES, scrape_site, enrich_with_text, save_csv, find_start_page, fetch_article_text
 
@@ -1816,6 +1818,8 @@ def show_help():
         ("Site selector", [
             ("s", "Search across all sites"),
             ("f", "Compound filter across selected sites"),
+            ("g", "Get update from GitHub"),
+            ("!", "STELLAAAAAA!"),
             ("Enter", "Open site"),
         ]),
     ]
@@ -1873,6 +1877,7 @@ def global_search():
 
 def site_selector() -> int | None:
     """Show list of sites. Returns SITES index or None to quit."""
+    dance_for_stella()
     # Pre-scan CSV info for each site
     site_info = []
     for i, site in enumerate(SITES):
@@ -1908,7 +1913,7 @@ def site_selector() -> int | None:
                 print(f"    {c(f'{idx+1}', 'dim')}  {name}  {c(count_str, 'dim')}")
 
         print()
-        print(f"  {c('s', 'dim')}  Search all sites   {c('f', 'dim')}  Filter   {c('?', 'dim')}  Help   {c('q', 'dim')}  Quit")
+        print(f"  {c('s', 'dim')}  Search all sites   {c('f', 'dim')}  Filter   {c('g', 'dim')}  Get update   {c('?', 'dim')}  Help   {c('q', 'dim')}  Quit")
         print()
         light = detect_light_theme()
         theme_name = "light" if light else "dark"
@@ -1943,6 +1948,15 @@ def site_selector() -> int | None:
                     read_key()
         elif key == "?":
             show_help()
+        elif key == "g":
+            trigger_manual_check_in_background()
+            for _ in range(20):  # ~4s — usually enough for the check to finish
+                time.sleep(0.2)
+                with _update_lock:
+                    if not _update_status["checking"]:
+                        break
+        elif key == "!":
+            dance_for_stella()
 
 
 # ---------------------------------------------------------------------------
@@ -2308,6 +2322,84 @@ def site_menu(site: dict | None, posts: list[dict], slug: str | None, all_loaded
 
 
 # ---------------------------------------------------------------------------
+# Easter egg: A Streetcar Named Desire-style dancer who yells for Stella.
+# Triggered by `!` in the site selector, plus a small random chance when
+# the selector is entered. Pure decoration — never blocks anything.
+# ---------------------------------------------------------------------------
+
+STELLA_QUOTES = [
+    "STELLAAAAAAA!",
+    "STELL-AAAH! Anything new from RRN today?",
+    "Hey Stella, throw me down those headlines!",
+    "Stella, my dove — what's brewing in Brennende Frage?",
+    "Without you, Stella, I'm just a man in a terminal.",
+    "I yelled your name from the gutter, Stella!",
+    "Stella darling, did the Russians do something today?",
+    "Press 'b' to bookmark me too, Stella!",
+    "Stella, you keep me sane in this loud world.",
+    "Stella baby, give me five fresh stories and I'll buy you flowers.",
+    "Stella! Stop hiding behind that filter — show me ALL the posts!",
+    "STELLAAAA! …Stella? Anyone?",
+    "Stella, I bookmarked my heart for you.",
+    "Hey kid, you ever see a man dance for a news reader before?",
+    "Stella, you're the only TUI I'll ever love.",
+    "Östlicher Wind blew my hat off — get me the article, Stella!",
+    "Stell-aaa! Did Wahlomacht wake up yet?",
+    "STELLA, I'M STANDING IN THE RAIN FOR YOU!",
+    "Stella, scrape me the moon and stars!",
+    "I refresh my heart at intervals of 10 minutes, Stella.",
+]
+
+DANCE_FRAMES = [
+    [r"     \o/  ",
+     r"      |   ",
+     r"     / \  "],
+    [r"     _o_  ",
+     r"      |   ",
+     r"     / \  "],
+    [r"      o/  ",
+     r"     /|   ",
+     r"     / \  "],
+    [r"     \o   ",
+     r"      |\  ",
+     r"     / \  "],
+]
+
+
+def dance_for_stella():
+    quote = random.choice(STELLA_QUOTES)
+    for i in range(10):
+        clear_screen()
+        print()
+        print()
+        print()
+        for line in DANCE_FRAMES[i % len(DANCE_FRAMES)]:
+            print("        " + c(line, "accent", "bold"))
+        print()
+        notes = ["~♪~", " ♫ ", "~♬ ", " ♩~"][i % 4]
+        print("           " + c(notes, "title", "bold"))
+        time.sleep(0.18)
+
+    clear_screen()
+    pad = max(36, len(quote) + 4)
+    bubble_top = "    .-" + "-" * pad + "-."
+    bubble_mid = "    | " + quote.ljust(pad) + " |"
+    bubble_bot = "    '-" + "-" * pad + "-'"
+    print()
+    print(c(bubble_top, "accent"))
+    print(c(bubble_mid, "title", "bold"))
+    print(c(bubble_bot, "accent"))
+    print(c("              \\", "dim"))
+    print(c("               \\", "dim"))
+    print(c("                 \\o/   ~♪~", "accent", "bold"))
+    print(c("                  |", "accent", "bold"))
+    print(c("                 / \\", "accent", "bold"))
+    print()
+    print(c("    (press any key)", "dim"))
+    read_key()
+
+
+# ---------------------------------------------------------------------------
 # Self-update from GitHub
 #
 # Flow:
@@ -2330,6 +2422,8 @@ _update_status = {
     "downloaded": False,
     "remote_version": None,
     "last_error": None,
+    "manual_msg": None,   # transient message from a manual check
+    "checking": False,    # guards re-entry of manual check
 }
 _update_lock = threading.Lock()
 
@@ -2364,7 +2458,9 @@ def apply_pending_update_if_any():
 
 
 def _download_pending(remote_version: str) -> bool:
-    """Download all UPDATE_FILES to *.stella_pending. Rolls back on failure."""
+    """Download all UPDATE_FILES to *.stella_pending. Validates the staged
+    stella.py parses to remote_version before declaring success — so a
+    captive portal or partial response can't corrupt the live file."""
     import urllib.error
     written = []
     try:
@@ -2375,11 +2471,24 @@ def _download_pending(remote_version: str) -> bool:
                 if e.code == 404:
                     continue
                 raise
+            if not data or len(data) < 32:
+                raise ValueError(f"empty/tiny payload for {fname}")
             tmp = os.path.join(SCRIPT_DIR, fname + ".stella_pending")
             with open(tmp, "wb") as f:
                 f.write(data)
             written.append(tmp)
-        return bool(written)
+
+        head_path = os.path.join(SCRIPT_DIR, "stella.py.stella_pending")
+        if not os.path.exists(head_path):
+            raise ValueError("stella.py missing from download set")
+        with open(head_path, "rb") as f:
+            head = f.read().decode("utf-8", errors="replace")
+        m = re.search(
+            r'^__version__\s*=\s*["\']([^"\']+)["\']', head, re.M)
+        if not m or m.group(1) != remote_version:
+            raise ValueError("downloaded stella.py version mismatch")
+
+        return True
     except Exception:
         for p in written:
             try:
@@ -2404,33 +2513,73 @@ def _try_apply_pending() -> int:
     return applied
 
 
-def check_for_update_once():
-    """One pass: fetch remote __version__, and if newer, download + apply."""
+def check_for_update_once() -> bool:
+    """One pass. Returns True if the check completed (regardless of whether
+    an update was found) and False on network/parse failure — so callers can
+    decide between normal interval and shorter retry."""
     try:
         head = _fetch_url(_raw_url("stella.py")).decode(
             "utf-8", errors="replace")
         m = re.search(
             r'^__version__\s*=\s*["\']([^"\']+)["\']', head, re.M)
         if not m:
-            return
+            with _update_lock:
+                _update_status["last_error"] = "no __version__ in remote stella.py"
+            return False
         remote_v = m.group(1)
         if _version_tuple(remote_v) <= _version_tuple(__version__):
-            return
+            with _update_lock:
+                _update_status["last_error"] = None
+            return True
         if not _download_pending(remote_v):
-            return
+            with _update_lock:
+                _update_status["last_error"] = "download failed validation"
+            return False
         _try_apply_pending()
         with _update_lock:
             _update_status["downloaded"] = True
             _update_status["remote_version"] = remote_v
+            _update_status["last_error"] = None
+        return True
     except Exception as e:
         with _update_lock:
             _update_status["last_error"] = str(e)
+        return False
 
 
 def _update_loop():
     while True:
-        check_for_update_once()
-        time.sleep(UPDATE_CHECK_INTERVAL_SEC)
+        ok = check_for_update_once()
+        time.sleep(UPDATE_CHECK_INTERVAL_SEC if ok else UPDATE_RETRY_INTERVAL_SEC)
+
+
+def trigger_manual_check_in_background():
+    """Fire a one-off check from a background thread. Used by the `U`
+    keybinding in the site selector. Safe to call repeatedly — re-entry
+    is guarded by the `checking` flag."""
+    with _update_lock:
+        if _update_status["checking"]:
+            return
+        _update_status["checking"] = True
+        _update_status["manual_msg"] = "  ⟳ Checking GitHub for updates…"
+
+    def _run():
+        try:
+            ok = check_for_update_once()
+            with _update_lock:
+                if _update_status["downloaded"]:
+                    _update_status["manual_msg"] = None  # banner takes over
+                elif ok:
+                    _update_status["manual_msg"] = (
+                        f"  ✓ You're on the latest version (v{__version__}).")
+                else:
+                    _update_status["manual_msg"] = (
+                        "  ✗ Couldn't reach GitHub — check your connection.")
+        finally:
+            with _update_lock:
+                _update_status["checking"] = False
+
+    threading.Thread(target=_run, daemon=True).start()
 
 
 def start_update_checker():
@@ -2447,6 +2596,8 @@ def update_banner_line() -> str | None:
         if _update_status["downloaded"]:
             v = _update_status["remote_version"]
             return f"  ★ Stella v{v} downloaded — restart to use the new version"
+        if _update_status["manual_msg"]:
+            return _update_status["manual_msg"]
     return None
 
 
