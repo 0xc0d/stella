@@ -1655,7 +1655,7 @@ def paginate_posts(posts: list[dict], highlight: str | None = None, all_posts: l
         print(
             c(f" {cur_disp}/{total} ", "accent") +
             c(f" p.{page + 1}/{total_pages} ", "dim") +
-            c(f" ↑↓ move  [s] title  {r_hint}  [g] tag  [G] filter  [b] bm  [B] bms{filter_hint}{update_hint}  [?] help", "dim")
+            c(f" ↑↓ move  [s] title  {r_hint}  [g] tag  [G] tag filter  [b] bm  [B] bms{filter_hint}{update_hint}  [?] help", "dim")
         )
         if _pending_v:
             print(c(f"  ★ Stella v{_pending_v} ready — press A to update now", "accent", "bold"))
