@@ -959,7 +959,7 @@ def show_post_detail(post: dict, highlight=None):
     # Tags on this article
     _tags = get_tags(load_state(), post.get("url", ""))
     if _tags:
-        print(c("  🏷 ", "accent") + c(", ".join(_tags), "accent", "bold"))
+        print(c("  Tags   ", "dim") + c(" · ".join(_tags), "accent", "bold"))
         print(c("─" * width, "bar"))
 
     # Bookmark status and controls
@@ -1437,31 +1437,44 @@ def run_filter(spec: FilterSpec, current_slug: str | None,
 
 
 def tag_picker(state: dict, url: str):
-    """Toggle existing tags on/off for `url` and add new ones. Mutates+saves state."""
+    """Cursor-driven multi-select of tags for `url`, plus add-new. Mutates+saves state."""
     if not url:
         return
+    cursor = 0
     while True:
         existing = all_tags(state)
         current = set(get_tags(state, url))
+        if cursor >= len(existing):
+            cursor = max(0, len(existing) - 1)
         clear_screen()
         print_header("Tags")
         print()
         if existing:
-            print(c("  Existing tags (type a number to toggle):", "dim"))
-            for idx, t in enumerate(existing, 1):
-                mark = c(" ✓", "accent") if t in current else "  "
-                print(f"   {mark} {c(str(idx).rjust(3), 'accent')}  {t}")
+            for idx, t in enumerate(existing):
+                checked = t in current
+                box = "[x]" if checked else "[ ]"
+                if idx == cursor:
+                    print(f"  {c('▸', 'accent')} {c(box, 'accent', 'bold')} {c(t, 'title', 'bold')}")
+                else:
+                    style = ("accent",) if checked else ("dim",)
+                    print(f"    {c(box, *style)} {c(t, *style)}")
         else:
-            print(c("  No tags yet.", "dim"))
+            print(c("  No tags yet — press [n] to add one.", "dim"))
         print()
-        print(c("  Current: ", "dim") + (c(", ".join(sorted(current)), "accent")
+        print(c("  Current: ", "dim") + (c(" · ".join(sorted(current)), "accent")
                                          if current else c("(none)", "dim")))
         print()
-        print(c("  [number] toggle   [n] new tag   [backspace] done", "dim"))
+        print(c("  ↑↓ move   Space toggle   [n] new tag   [backspace] done", "dim"))
 
         key = read_key()
         if key in ("backspace", "esc", "enter", "q", "quit"):
             break
+        elif key == "up":
+            if existing:
+                cursor = (cursor - 1) % len(existing)
+        elif key == "down":
+            if existing:
+                cursor = (cursor + 1) % len(existing)
         elif key == "n":
             print()
             new = input_line(c("  New tag: ", "accent"))
@@ -1470,18 +1483,16 @@ def tag_picker(state: dict, url: str):
                 tags.append(new)
                 set_tags(state, url, tags)
                 save_state(state)
-        elif key.isdigit():
-            n = int(key)
-            if existing:
-                if 1 <= n <= len(existing):
-                    t = existing[n - 1]
-                    tags = get_tags(state, url)
-                    if t in tags:
-                        tags = [x for x in tags if x != t]
-                    else:
-                        tags.append(t)
-                    set_tags(state, url, tags)
-                    save_state(state)
+        elif key == " ":
+            if existing and 0 <= cursor < len(existing):
+                t = existing[cursor]
+                tags = get_tags(state, url)
+                if t in tags:
+                    tags = [x for x in tags if x != t]
+                else:
+                    tags.append(t)
+                set_tags(state, url, tags)
+                save_state(state)
 
 
 def pick_tag(state: dict):
