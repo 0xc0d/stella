@@ -2239,7 +2239,7 @@ def global_search():
 
 def site_selector() -> int | None:
     """Show list of sites. Returns SITES index or None to quit."""
-    dance_for_stella()
+    pending_dance = True  # overlay the dancer on top of the rendered menu, once
     # Pre-scan CSV info for each site
     site_info = []
     for i, site in enumerate(SITES):
@@ -2284,6 +2284,11 @@ def site_selector() -> int | None:
         if banner:
             print(c(banner, "accent", "bold"))
         print()
+
+        if pending_dance:
+            dance_for_stella()       # floats on top of the menu just rendered above
+            pending_dance = False
+            continue                 # redraw the menu cleanly without the dancer
 
         key = read_key()
         if key in ("q", "quit"):
