@@ -20,7 +20,7 @@ import random
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
-__version__ = "1.1.4"
+__version__ = "1.1.5"
 
 GITHUB_OWNER = "0xc0d"
 GITHUB_REPO = "stella"
@@ -28,6 +28,10 @@ UPDATE_BRANCH = "main"
 UPDATE_FILES = ["stella.py", "scraper.py", "Stella.cmd",
                 "repair_text.py", "backfill.py"]
 CHANGELOG = {
+    "1.1.5": [
+        "Fix: scrolling the article list no longer flickers — the list now "
+        "repaints in place instead of clearing the whole screen each keypress.",
+    ],
     "1.1.4": [
         "Fix: Stella now runs in the classic console instead of Windows "
         "Terminal, which was trailing/ghosting text while scrolling.",
@@ -211,6 +215,49 @@ def hard_clear():
         os.system("cls")
 
 
+# ---------------------------------------------------------------------------
+# Flicker-free redraw. The old per-frame clear_screen() wiped the whole screen
+# on every keypress (cls or 2J) and then repainted — that blank-then-paint is
+# the flicker. Instead, frame_begin() captures everything a frame prints, and
+# frame_end() paints it IN PLACE: home the cursor (no clear), overwrite each
+# line while erasing its old tail (\033[K), then erase any leftover lines below
+# (\033[0J). The screen never goes blank, so there is no flicker and no ghost.
+# ---------------------------------------------------------------------------
+import io as _io
+
+_frame = {"buf": None, "saved": None}
+
+
+def frame_begin():
+    """Start buffering a frame's output (VT terminals only)."""
+    if not _VT_ENABLED:
+        clear_screen()
+        return
+    _frame["saved"] = sys.stdout
+    _frame["buf"] = _io.StringIO()
+    sys.stdout = _frame["buf"]
+
+
+def frame_end():
+    """Paint the buffered frame in place. Safe no-op if no frame is open."""
+    if _frame["buf"] is None:
+        return
+    sys.stdout = _frame["saved"]
+    text = _frame["buf"].getvalue()
+    _frame["buf"] = None
+    _frame["saved"] = None
+    lines = text.split("\n")
+    out = ["\033[H"]
+    for i, ln in enumerate(lines):
+        out.append(ln)
+        out.append("\033[K")             # erase this line's old tail
+        if i != len(lines) - 1:
+            out.append("\n")
+    out.append("\033[0J")                # erase any lines left below the frame
+    sys.stdout.write("".join(out))
+    sys.stdout.flush()
+
+
 def _enable_win_ansi():
     """Enable ANSI escape codes on Windows 10+."""
     global _VT_ENABLED
@@ -231,6 +278,7 @@ def _enable_win_ansi():
 
 def read_key() -> str:
     """Read a single keypress, handling arrow keys and regular chars."""
+    frame_end()  # paint any open in-place frame before blocking for input
     if IS_WINDOWS:
         return _read_key_windows()
     return _read_key_unix()
@@ -298,6 +346,7 @@ def _read_key_unix() -> str:
 
 def input_line(prompt: str) -> str:
     """Regular line input (restores normal terminal mode)."""
+    frame_end()  # paint any open in-place frame so the prompt is visible
     try:
         return input(prompt).strip()
     except (EOFError, KeyboardInterrupt):
@@ -1755,7 +1804,7 @@ def paginate_posts(posts: list[dict], highlight: str | None = None, all_posts: l
         if cursor >= total:
             cursor = max(0, total - 1)
 
-        clear_screen()
+        frame_begin()  # paint in place (read_key/input_line flush it) — no flicker
         tw, term_h = term_size()
 
         # Filter strip (top)
