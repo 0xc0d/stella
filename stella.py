@@ -668,7 +668,8 @@ def _highlight_pattern(highlight):
 
 
 def print_post_line(i: int, post: dict, highlight=None,
-                    bookmarked: bool = False, selected: bool = False):
+                    bookmarked: bool = False, selected: bool = False,
+                    read: bool = False):
     bm = c(" ★", "bookmark") if bookmarked else "  "
     idx_str = c(f"{i:>4}.", "idx")
     date_str = c(f"[{post.get('date', '')}]", "date")
@@ -679,12 +680,16 @@ def print_post_line(i: int, post: dict, highlight=None,
         parts = pattern.split(title)
         matches = pattern.findall(title)
         title_str = ""
+        base_style = ("dim",) if read else ("title", "bold")
         for j, part in enumerate(parts):
-            title_str += c(part, "title", "bold")
+            title_str += c(part, *base_style)
             if j < len(matches):
                 title_str += c(matches[j], "highlight", "bold")
     else:
-        title_str = c(title, "title", "bold")
+        if read:
+            title_str = c(title, "dim")
+        else:
+            title_str = c(title, "title", "bold")
 
     if selected:
         # Full-line reverse video with search term highlight
