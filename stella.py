@@ -963,18 +963,18 @@ def show_post_detail(post: dict, highlight=None):
         print(c("─" * width, "bar"))
 
     # Bookmark status and controls
+    url = post.get("url", "")
     bookmarks = load_bookmarks()
-    is_bm = post.get("url") in {b.get("url") for b in bookmarks}
+    is_bm = url in {b.get("url") for b in bookmarks}
     has_text = not _text_is_missing(post.get("text", ""))
+    r_hint = "[r] mark unread" if is_read(load_state(), url) else "[r] mark read"
+    wc_hint = "  [w] word cloud" if has_text else ""
+    search_hint = "  [/] search" if has_text else ""
     if is_bm:
         print(c("  ★ Bookmarked", "bookmark"), end="")
-        wc_hint = "  [w] word cloud" if has_text else ""
-        search_hint = "  [/] search" if has_text else ""
-        print(c(f"  |  [b] remove bookmark  [r] read  [g] tag{wc_hint}{search_hint}  [backspace] back", "dim"))
+        print(c(f"  |  [b] remove bookmark  {r_hint}  [g] tag{wc_hint}{search_hint}  [backspace] back", "dim"))
     else:
-        wc_hint = "  [w] word cloud" if has_text else ""
-        search_hint = "  [/] search" if has_text else ""
-        print(c(f"  [b] bookmark  [r] read  [g] tag{wc_hint}{search_hint}  [backspace] back", "dim"))
+        print(c(f"  [b] bookmark  {r_hint}  [g] tag{wc_hint}{search_hint}  [backspace] back", "dim"))
 
     while True:
         key = read_key()
@@ -990,29 +990,16 @@ def show_post_detail(post: dict, highlight=None):
             return show_post_detail(post, highlight)
         elif key == "b":
             if is_bm:
-                remove_bookmark(post.get("url", ""))
-                is_bm = False
+                remove_bookmark(url)
             else:
                 add_bookmark(post)
-                is_bm = True
-            # Re-render the bookmark line
-            print(f"\033[A\033[2K", end="")  # move up, clear line
-            if is_bm:
-                print(c("  ★ Bookmarked", "bookmark"), end="")
-                print(c("  |  [b] remove bookmark  [r] read  [g] tag  [backspace] back", "dim"))
-            else:
-                print(c("  [b] bookmark  [r] read  [g] tag  [backspace] back", "dim"))
+            return show_post_detail(post, highlight)  # re-render with updated bookmark
         elif key == "r":
-            url = post.get("url", "")
             if url:
                 _state = load_state()
-                new_value = not is_read(_state, url)
-                set_read(_state, url, new_value)
+                set_read(_state, url, not is_read(_state, url))
                 save_state(_state)
-                print(c("  ✓ marked " + ("read" if new_value else "unread"),
-                        "accent"), end="\r", flush=True)
-                time.sleep(0.6)
-                print(" " * 40, end="\r", flush=True)
+            return show_post_detail(post, highlight)  # re-render with updated read state
         elif key == "g":
             _state = load_state()
             tag_picker(_state, post.get("url", ""))
