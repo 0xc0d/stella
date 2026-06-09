@@ -1775,27 +1775,43 @@ def show_bookmarks(posts: list[dict] | None = None):
         read_key()
         return
 
+    state = load_state()
+    tag_filter = None  # None | tag string
     _, term_h = term_size()
     page_size = max(5, term_h - 4)
     cursor = 0
-    total = len(bookmarks)
 
     while True:
-        clear_screen()
-        print_header(f"★ Bookmarks — {total} saved")
+        if tag_filter is None:
+            shown = bookmarks
+        else:
+            shown = [b for b in bookmarks
+                     if tag_filter in get_tags(state, b.get("url", ""))]
+        total = len(shown)
+        if cursor >= total:
+            cursor = max(0, total - 1)
 
-        page = cursor // page_size
+        clear_screen()
+        title = "★ Bookmarks"
+        if tag_filter is not None:
+            title += f" — tag: {tag_filter}  ({total})"
+        else:
+            title += f" — {len(bookmarks)} saved"
+        print_header(title)
+
+        page = cursor // page_size if total else 0
         total_pages = max(1, (total + page_size - 1) // page_size)
         start = page * page_size
         end = min(start + page_size, total)
 
         for i in range(start, end):
-            print_post_line(i + 1, bookmarks[i], bookmarked=True, selected=(i == cursor))
+            print_post_line(i + 1, shown[i], bookmarked=True, selected=(i == cursor),
+                            read=is_read(state, shown[i].get("url", "")))
 
         print()
         print(
-            c(f" {cursor + 1}/{total} ", "accent") +
-            c(" ↑↓ navigate  Enter view  [r] remove  [backspace] back", "dim")
+            c(f" {cursor + 1 if total else 0}/{total} ", "accent") +
+            c(" ↑↓ navigate  Enter view  [t] tag filter  [c] clear  [r] remove  [backspace] back", "dim")
         )
 
         key = read_key()
@@ -1807,20 +1823,29 @@ def show_bookmarks(posts: list[dict] | None = None):
         elif key == "up":
             if cursor > 0:
                 cursor -= 1
-        elif key == "enter":
-            bm = bookmarks[cursor]
+        elif key == "t":
+            chosen = pick_tag(state)
+            if chosen is not None:
+                tag_filter = chosen
+                cursor = 0
+        elif key == "c":
+            tag_filter = None
+            cursor = 0
+        elif key == "enter" and total > 0:
+            bm = shown[cursor]
             full_post = post_by_url.get(bm.get("url"), bm)
             show_post_detail(full_post)
-        elif key == "r":
-            remove_bookmark(bookmarks[cursor].get("url", ""))
+            set_read(state, bm.get("url", ""), True)
+            save_state(state)
+        elif key == "r" and total > 0:
+            remove_bookmark(shown[cursor].get("url", ""))
             bookmarks = load_bookmarks()
-            total = len(bookmarks)
-            if total == 0:
+            if not bookmarks:
                 clear_screen()
                 print(c("\n  All bookmarks removed. Press any key...", "dim"))
                 read_key()
                 break
-            cursor = min(cursor, total - 1)
+            cursor = min(cursor, max(0, len(bookmarks) - 1))
 
 
 # ---------------------------------------------------------------------------
