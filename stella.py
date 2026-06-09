@@ -2192,6 +2192,20 @@ def show_help():
             ("t", "Toggle timeline chart"),
             ("w", "Word cloud"),
         ]),
+        ("In an article", [
+            ("r", "Mark read / unread"),
+            ("g", "Edit tags"),
+            ("b", "Bookmark / unbookmark"),
+            ("/", "Search within the article"),
+            ("w", "Word cloud"),
+            ("backspace", "Back to the list"),
+        ]),
+        ("In bookmarks", [
+            ("G", "Filter bookmarks by tag"),
+            ("c", "Clear tag filter"),
+            ("r", "Remove bookmark"),
+            ("Enter", "Open bookmark"),
+        ]),
         ("Updates", [
             ("u", "Quick update (fetch latest)"),
             ("U", "Scrape custom date range"),
@@ -2201,6 +2215,7 @@ def show_help():
             ("s", "Search across all sites"),
             ("f", "Compound filter across selected sites"),
             ("g", "Get update from GitHub"),
+            ("A", "Apply a downloaded update now (when available)"),
             ("!", "STELLAAAAAA!"),
             ("Enter", "Open site"),
         ]),
