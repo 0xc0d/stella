@@ -12,6 +12,13 @@ set PYTHONUTF8=1
 REM Run from the folder this .cmd lives in (so it finds posts_*.csv)
 cd /d "%~dp0"
 
+REM If we already re-launched ourselves into Windows Terminal, skip the wt
+REM branch — otherwise the inner window re-detects wt and relaunches forever.
+if /I "%~1"=="--inner" (
+    shift
+    goto :PICK_PYTHON
+)
+
 REM Prefer Windows Terminal (wt.exe) — it handles unicode + can launch maximized
 where wt >nul 2>&1
 if %ERRORLEVEL% EQU 0 goto :USE_WT

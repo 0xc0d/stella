@@ -20,7 +20,7 @@ import random
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
-__version__ = "1.1.0"
+__version__ = "1.1.1"
 
 GITHUB_OWNER = "0xc0d"
 GITHUB_REPO = "stella"
@@ -28,6 +28,12 @@ UPDATE_BRANCH = "main"
 UPDATE_FILES = ["stella.py", "scraper.py", "Stella.cmd",
                 "repair_text.py", "backfill.py"]
 CHANGELOG = {
+    "1.1.1": [
+        "Fix: every site showed \"no data\" when Stella was launched from a "
+        "folder other than its own — CSVs are now found beside stella.py.",
+        "Fix: Windows Terminal launcher relaunched itself in a loop, so the "
+        "window flashed open and closed immediately.",
+    ],
     "1.1.0": [
         "Read tracking — opening an article marks it read; press r to toggle.",
         "Read articles show dimmed in the list.",
@@ -40,6 +46,10 @@ UPDATE_CHECK_INTERVAL_SEC = 10 * 60
 UPDATE_RETRY_INTERVAL_SEC = 60
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+# All data (CSVs, seen, state, bookmarks) lives beside stella.py. Anchor every
+# data path here, never to the CWD — a launch from any other directory must
+# still find the posts_*.csv shards instead of showing every site as "no data".
+DATA_DIR = SCRIPT_DIR
 
 from scraper import SITES, scrape_site, enrich_with_text, save_csv, find_start_page, fetch_article_text
 
@@ -373,7 +383,8 @@ def load_csv(path: str) -> list[dict]:
 
 
 def find_latest_csv() -> str | None:
-    csvs = [f for f in os.listdir(".") if f.startswith("posts_") and f.endswith(".csv")]
+    csvs = [os.path.join(DATA_DIR, f) for f in os.listdir(DATA_DIR)
+            if f.startswith("posts_") and f.endswith(".csv")]
     if not csvs:
         return None
     return max(csvs, key=lambda f: os.path.getmtime(f))
@@ -403,7 +414,7 @@ def _text_is_missing(text: str) -> bool:
 
 def csv_path_for_site(slug: str) -> str:
     """Canonical CSV path for a site: posts_{slug}.csv"""
-    return f"posts_{slug}.csv"
+    return os.path.join(DATA_DIR, f"posts_{slug}.csv")
 
 
 def find_csv_for_site(slug: str) -> str | None:
@@ -413,7 +424,8 @@ def find_csv_for_site(slug: str) -> str | None:
         return canonical
     # Fallback: find latest dated file and rename it to canonical
     prefix = f"posts_{slug}_"
-    matches = [f for f in os.listdir(".") if f.startswith(prefix) and f.endswith(".csv")]
+    matches = [os.path.join(DATA_DIR, f) for f in os.listdir(DATA_DIR)
+               if f.startswith(prefix) and f.endswith(".csv")]
     if not matches:
         return None
     def extract_date(fname):
@@ -1034,15 +1046,15 @@ def find_shards(slug: str) -> list[tuple[int, str]]:
     """Return (year, path) tuples for all year shards of a site, sorted oldest→newest."""
     pattern = re.compile(rf"^posts_{re.escape(slug)}_(\d{{4}})\.csv$")
     results = []
-    for f in os.listdir("."):
+    for f in os.listdir(DATA_DIR):
         m = pattern.match(f)
         if m:
-            results.append((int(m.group(1)), f))
+            results.append((int(m.group(1)), os.path.join(DATA_DIR, f)))
     return sorted(results)
 
 
 def shard_path(slug: str, year: int) -> str:
-    return f"posts_{slug}_{year}.csv"
+    return os.path.join(DATA_DIR, f"posts_{slug}_{year}.csv")
 
 
 def load_shards(slug: str, years: list[int] | None = None) -> list[dict]:
@@ -1136,14 +1148,14 @@ def ensure_article_text(post: dict) -> bool:
 
 def migrate_to_shards(slug: str):
     """One-time: split legacy posts_{slug}.csv into per-year shards."""
-    legacy = f"posts_{slug}.csv"
+    legacy = os.path.join(DATA_DIR, f"posts_{slug}.csv")
     if not os.path.exists(legacy) or find_shards(slug):
         return
     try:
         posts = load_csv(legacy)
         if posts:
             save_sharded(posts, slug)
-        os.rename(legacy, f"posts_{slug}.csv.bak")
+        os.rename(legacy, legacy + ".bak")
     except Exception as e:
         print(c(f"  Warning: shard migration failed for {slug}: {e}", "warn"))
 
@@ -2026,7 +2038,7 @@ def show_bookmarks(posts: list[dict] | None = None):
 # Read / unread tracking
 # ---------------------------------------------------------------------------
 
-SEEN_FILE = "stella_seen.json"
+SEEN_FILE = os.path.join(SCRIPT_DIR, "stella_seen.json")
 
 
 def load_seen() -> dict:
@@ -2202,7 +2214,7 @@ def clear_resume(state: dict):
     _meta(state).pop("resume", None)
 
 
-_FILTER_HISTORY_MAX = 5
+_FILTER_HISTORY_MAX = 10
 
 
 def get_filter_history(state: dict) -> list:
@@ -2217,7 +2229,7 @@ def get_filter_history(state: dict) -> list:
 
 
 def record_filter(state: dict, spec: "FilterSpec", path: str = STATE_FILE):
-    """Remember an applied filter (newest first, deduped, capped at 5).
+    """Remember an applied filter (newest first, deduped, capped at 10).
 
     Site-only specs carry no real constraints, so they aren't recorded."""
     if spec.is_empty():
