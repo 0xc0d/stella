@@ -1484,9 +1484,11 @@ def filter_form(default_site_slug: str | None, bookmark_mode: bool = False) -> F
             if key == "enter":
                 chosen = recent_filter_picker(history)
                 if chosen is not None:
-                    chosen = scope_for_mode(chosen)
-                    record_filter(state, chosen)   # re-applying bumps recency
-                    return chosen
+                    # Record the original identity FIRST so re-applying bumps the
+                    # existing entry (dedup matches the stored dict); scoping it
+                    # afterward would change site_slugs and create a duplicate.
+                    record_filter(state, chosen)
+                    return scope_for_mode(chosen)
         elif kind == "title_words":
             if key == "enter":
                 term = input_line(c("  Title — comma-separate phrases (e.g. merkel, tax reform): ", "accent"))
