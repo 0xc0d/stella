@@ -2778,8 +2778,7 @@ def dance_for_stella():
     def write(s: str):
         sys.stdout.write(s)
 
-    write("\033[?25l")  # hide cursor
-    clear_screen()
+    write("\033[?25l")  # hide cursor (no clear — overlay on top of current screen)
 
     # Border (rounded)
     border_top = "╭" + "─" * inner_w + "╮"
