@@ -183,6 +183,20 @@ class DedupTest(unittest.TestCase):
         ]
         self.assertEqual(len(stella._dedup_posts(posts)), 2)
 
+    def test_merge_rejects_url_variant_and_title_date(self):
+        existing = [{"date": "2026-06-09 10:00", "title": "Erol",
+                     "url": "https://rrn.com.tr/erol"}]
+        new = [
+            {"date": "2026-06-09 10:00", "title": "Erol",
+             "url": "https://rrn.com.tr/en/erol/"},        # /en/ variant -> drop
+            {"date": "2026-06-10 11:00", "title": "Fresh",
+             "url": "https://rrn.com.tr/fresh"},           # genuinely new -> keep
+            {"date": "2026-06-10 11:00", "title": "Fresh",
+             "url": "https://rrn.com.tr/fresh-2"},         # dup title+date -> drop
+        ]
+        out = stella.merge_new_posts(existing, new)
+        self.assertEqual([p["title"] for p in out], ["Fresh"])
+
 
 if __name__ == "__main__":
     unittest.main()

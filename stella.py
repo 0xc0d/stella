@@ -20,7 +20,7 @@ import random
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
-__version__ = "1.1.6"
+__version__ = "1.1.7"
 
 GITHUB_OWNER = "0xc0d"
 GITHUB_REPO = "stella"
@@ -28,6 +28,12 @@ UPDATE_BRANCH = "main"
 UPDATE_FILES = ["stella.py", "scraper.py", "Stella.cmd",
                 "repair_text.py", "backfill.py"]
 CHANGELOG = {
+    "1.1.7": [
+        "Revert the in-place repaint from 1.1.5 — it stacked text on long "
+        "lines and broke mouse-scroll. Back to a clean full clear (instant "
+        "ANSI, no flickery cls subprocess).",
+        "Scraping no longer stores duplicate articles (URL-variant aware).",
+    ],
     "1.1.6": [
         "Fix: the same article no longer appears twice — the list now dedupes "
         "by URL (ignoring /en/ and trailing-slash variants) and title+date.",
@@ -200,14 +206,16 @@ def term_size():
 
 
 def clear_screen():
-    # Byte-identical to v1.0.2 (the last build that scrolled cleanly): cls on
-    # Windows, ANSI elsewhere. The one-time scrollback wipe for 1.1.x's extra
-    # startup screens lives in hard_clear(), called once at startup — never
-    # per-frame (3J every keypress flickers Windows Terminal).
-    if IS_WINDOWS:
-        os.system("cls")
-    else:
+    # Full clear every frame (home + erase screen). ANSI is used wherever VT is
+    # on — including Windows — because os.system("cls") spawns a process each
+    # keypress and visibly flickers. A plain ANSI clear is instant and lets the
+    # terminal coalesce clear+repaint, and unlike the in-place paint we tried it
+    # keeps normal scrollback (mouse-wheel works) and can't stack on wrap.
+    # Pre-VT consoles (no _VT_ENABLED) fall back to cls.
+    if _VT_ENABLED:
         print("\033[2J\033[H", end="", flush=True)
+    else:
+        os.system("cls")
 
 
 def hard_clear():
@@ -217,49 +225,6 @@ def hard_clear():
         print("\033[3J\033[2J\033[H", end="", flush=True)
     else:
         os.system("cls")
-
-
-# ---------------------------------------------------------------------------
-# Flicker-free redraw. The old per-frame clear_screen() wiped the whole screen
-# on every keypress (cls or 2J) and then repainted — that blank-then-paint is
-# the flicker. Instead, frame_begin() captures everything a frame prints, and
-# frame_end() paints it IN PLACE: home the cursor (no clear), overwrite each
-# line while erasing its old tail (\033[K), then erase any leftover lines below
-# (\033[0J). The screen never goes blank, so there is no flicker and no ghost.
-# ---------------------------------------------------------------------------
-import io as _io
-
-_frame = {"buf": None, "saved": None}
-
-
-def frame_begin():
-    """Start buffering a frame's output (VT terminals only)."""
-    if not _VT_ENABLED:
-        clear_screen()
-        return
-    _frame["saved"] = sys.stdout
-    _frame["buf"] = _io.StringIO()
-    sys.stdout = _frame["buf"]
-
-
-def frame_end():
-    """Paint the buffered frame in place. Safe no-op if no frame is open."""
-    if _frame["buf"] is None:
-        return
-    sys.stdout = _frame["saved"]
-    text = _frame["buf"].getvalue()
-    _frame["buf"] = None
-    _frame["saved"] = None
-    lines = text.split("\n")
-    out = ["\033[H"]
-    for i, ln in enumerate(lines):
-        out.append(ln)
-        out.append("\033[K")             # erase this line's old tail
-        if i != len(lines) - 1:
-            out.append("\n")
-    out.append("\033[0J")                # erase any lines left below the frame
-    sys.stdout.write("".join(out))
-    sys.stdout.flush()
 
 
 def _enable_win_ansi():
@@ -282,7 +247,6 @@ def _enable_win_ansi():
 
 def read_key() -> str:
     """Read a single keypress, handling arrow keys and regular chars."""
-    frame_end()  # paint any open in-place frame before blocking for input
     if IS_WINDOWS:
         return _read_key_windows()
     return _read_key_unix()
@@ -350,7 +314,6 @@ def _read_key_unix() -> str:
 
 def input_line(prompt: str) -> str:
     """Regular line input (restores normal terminal mode)."""
-    frame_end()  # paint any open in-place frame so the prompt is visible
     try:
         return input(prompt).strip()
     except (EOFError, KeyboardInterrupt):
@@ -543,15 +506,38 @@ def scraped_to_csv_row(post: dict) -> dict:
     }
 
 
+def _norm_url(url: str) -> str:
+    """Normalize a URL for dedup: lowercased, no trailing slash, '/en/' folded
+    so rrn .../x and .../en/x collapse. Empty stays empty."""
+    u = (url or "").strip().rstrip("/").lower()
+    return re.sub(r"^(https?://[^/]+)/en/", r"\1/", u) if u else ""
+
+
+def _title_date_key(post: dict) -> tuple:
+    return (post.get("date", ""), (post.get("title", "") or "").strip().lower())
+
+
 def merge_new_posts(existing: list[dict], new_posts: list[dict]) -> list[dict]:
-    """Return only genuinely new posts (not already in existing), deduplicated."""
-    has_url = any(p.get("url") for p in existing)
-    if has_url:
-        seen = {p.get("url") for p in existing if p.get("url")}
-        return [p for p in new_posts if p.get("url") and p["url"] not in seen]
-    else:
-        seen = {(p.get("date", ""), p.get("title", "")) for p in existing}
-        return [p for p in new_posts if (p.get("date", ""), p.get("title", "")) not in seen]
+    """Return only genuinely new posts. A new post is dropped if it matches an
+    existing one — or an earlier new one — by normalized URL or title+date.
+    This is what stops re-scrapes adding a duplicate under a URL variant."""
+    seen_urls, seen_td = set(), set()
+    for p in existing:
+        k = _norm_url(p.get("url", ""))
+        if k:
+            seen_urls.add(k)
+        seen_td.add(_title_date_key(p))
+    out = []
+    for p in new_posts:
+        k = _norm_url(p.get("url", ""))
+        td = _title_date_key(p)
+        if (k and k in seen_urls) or (td[1] and td in seen_td):
+            continue
+        if k:
+            seen_urls.add(k)
+        seen_td.add(td)
+        out.append(p)
+    return out
 
 
 def save_merged_csv(posts: list[dict], csv_path: str):
@@ -1150,9 +1136,8 @@ def _dedup_posts(posts: list[dict]) -> list[dict]:
     .../en/x collapse) or, lacking a URL, its (date, title) matches."""
     seen_urls, seen_td, out = set(), set(), []
     for p in posts:
-        url = (p.get("url") or "").strip().rstrip("/").lower()
-        key = re.sub(r"^(https?://[^/]+)/en/", r"\1/", url) if url else ""
-        td = (p.get("date", ""), (p.get("title", "") or "").strip().lower())
+        key = _norm_url(p.get("url", ""))
+        td = _title_date_key(p)
         # Dup if the (slash/'en'-normalized) URL repeats, or the same title ran
         # on the same date (catches re-scrapes that landed a new URL variant).
         if (key and key in seen_urls) or (td[1] and td in seen_td):
@@ -1828,7 +1813,7 @@ def paginate_posts(posts: list[dict], highlight: str | None = None, all_posts: l
         if cursor >= total:
             cursor = max(0, total - 1)
 
-        frame_begin()  # paint in place (read_key/input_line flush it) — no flicker
+        clear_screen()
         tw, term_h = term_size()
 
         # Filter strip (top)
