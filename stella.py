@@ -1426,6 +1426,54 @@ def run_filter(spec: FilterSpec, current_slug: str | None,
     return results
 
 
+def tag_picker(state: dict, url: str):
+    """Toggle existing tags on/off for `url` and add new ones. Mutates+saves state."""
+    if not url:
+        return
+    while True:
+        existing = all_tags(state)
+        current = set(get_tags(state, url))
+        clear_screen()
+        print_header("Tags")
+        print()
+        if existing:
+            print(c("  Existing tags (type a number to toggle):", "dim"))
+            for idx, t in enumerate(existing, 1):
+                mark = c(" ✓", "accent") if t in current else "  "
+                print(f"   {mark} {c(str(idx).rjust(3), 'accent')}  {t}")
+        else:
+            print(c("  No tags yet.", "dim"))
+        print()
+        print(c("  Current: ", "dim") + (c(", ".join(sorted(current)), "accent")
+                                         if current else c("(none)", "dim")))
+        print()
+        print(c("  [number] toggle   [n] new tag   [backspace] done", "dim"))
+
+        key = read_key()
+        if key in ("backspace", "esc", "enter", "q", "quit"):
+            break
+        elif key == "n":
+            print()
+            new = input_line(c("  New tag: ", "accent"))
+            if new:
+                tags = get_tags(state, url)
+                tags.append(new)
+                set_tags(state, url, tags)
+                save_state(state)
+        elif key.isdigit():
+            n = int(key)
+            if existing:
+                if 1 <= n <= len(existing):
+                    t = existing[n - 1]
+                    tags = get_tags(state, url)
+                    if t in tags:
+                        tags = [x for x in tags if x != t]
+                    else:
+                        tags.append(t)
+                    set_tags(state, url, tags)
+                    save_state(state)
+
+
 def paginate_posts(posts: list[dict], highlight: str | None = None, all_posts: list[dict] | None = None,
                    db_total: int | None = None, site: dict | None = None,
                    slug: str | None = None, all_loaded: bool = True):
@@ -1563,6 +1611,9 @@ def paginate_posts(posts: list[dict], highlight: str | None = None, all_posts: l
             if url:
                 set_read(state, url, not is_read(state, url))
                 save_state(state)
+        elif key == "g" and total > 0:
+            tag_picker(state, display[cursor].get("url", ""))
+            state = load_state()
         elif key == "b" and total > 0:
             post = display[cursor]
             if post.get("url") in bm_urls:
