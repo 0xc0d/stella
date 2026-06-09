@@ -84,5 +84,76 @@ class StateStoreTest(unittest.TestCase):
         self.assertIsNone(stella.get_resume(state))
 
 
+from datetime import datetime
+
+
+class FilterSpecRoundTripTest(unittest.TestCase):
+    def test_full_roundtrip(self):
+        spec = stella.FilterSpec(
+            title_words=["merkel"], title_mode="all",
+            text_words=["steuer", "reform"], text_mode="any",
+            date_from=datetime(2026, 1, 2),
+            date_to=datetime(2026, 3, 4, 23, 59, 59),
+            site_slugs=["rrn_com_tr"], tags=["politics"])
+        back = stella.FilterSpec.from_dict(spec.to_dict())
+        self.assertEqual(back.title_words, ["merkel"])
+        self.assertEqual(back.title_mode, "all")
+        self.assertEqual(back.text_words, ["steuer", "reform"])
+        self.assertEqual(back.date_from, datetime(2026, 1, 2))
+        self.assertEqual(back.date_to, datetime(2026, 3, 4, 23, 59, 59))
+        self.assertEqual(back.site_slugs, ["rrn_com_tr"])
+        self.assertEqual(back.tags, ["politics"])
+
+    def test_empty_dates_roundtrip(self):
+        back = stella.FilterSpec.from_dict(stella.FilterSpec().to_dict())
+        self.assertIsNone(back.date_from)
+        self.assertIsNone(back.date_to)
+
+
+class FilterHistoryTest(unittest.TestCase):
+    def setUp(self):
+        fd, self.path = tempfile.mkstemp(suffix=".json")
+        os.close(fd)
+
+    def tearDown(self):
+        if os.path.exists(self.path):
+            os.remove(self.path)
+
+    def test_empty_spec_not_recorded(self):
+        state = {}
+        stella.record_filter(state, stella.FilterSpec(site_slugs=["a", "b"]), self.path)
+        self.assertEqual(stella.get_filter_history(state), [])
+
+    def test_newest_first_and_dedup(self):
+        state = {}
+        a = stella.FilterSpec(tags=["a"])
+        b = stella.FilterSpec(tags=["b"])
+        stella.record_filter(state, a, self.path)
+        stella.record_filter(state, b, self.path)
+        stella.record_filter(state, a, self.path)  # re-apply bumps to front
+        hist = stella.get_filter_history(state)
+        self.assertEqual([h.tags for h in hist], [["a"], ["b"]])
+
+    def test_capped_at_five(self):
+        state = {}
+        for i in range(8):
+            stella.record_filter(state, stella.FilterSpec(title_words=[f"w{i}"]), self.path)
+        hist = stella.get_filter_history(state)
+        self.assertEqual(len(hist), 5)
+        self.assertEqual(hist[0].title_words, ["w7"])  # newest
+
+    def test_corrupt_entry_skipped(self):
+        state = {"__meta__": {"filter_history": [{"tags": ["ok"]}, "garbage", 42]}}
+        hist = stella.get_filter_history(state)
+        self.assertEqual(len(hist), 1)
+        self.assertEqual(hist[0].tags, ["ok"])
+
+    def test_persists_to_disk(self):
+        state = {}
+        stella.record_filter(state, stella.FilterSpec(tags=["x"]), self.path)
+        reloaded = stella.load_state(self.path)
+        self.assertEqual(stella.get_filter_history(reloaded)[0].tags, ["x"])
+
+
 if __name__ == "__main__":
     unittest.main()

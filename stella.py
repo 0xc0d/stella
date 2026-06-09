@@ -1191,6 +1191,32 @@ class FilterSpec:
             parts.append(f"{len(self.site_slugs)} sites")
         return " · ".join(parts) if parts else "(no constraints)"
 
+    def to_dict(self) -> dict:
+        return {
+            "title_words": list(self.title_words),
+            "title_mode": self.title_mode,
+            "text_words": list(self.text_words),
+            "text_mode": self.text_mode,
+            "date_from": self.date_from.isoformat() if self.date_from else None,
+            "date_to": self.date_to.isoformat() if self.date_to else None,
+            "site_slugs": list(self.site_slugs),
+            "tags": list(self.tags),
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "FilterSpec":
+        df, dt = d.get("date_from"), d.get("date_to")
+        return cls(
+            title_words=list(d.get("title_words") or []),
+            title_mode=d.get("title_mode") or "any",
+            text_words=list(d.get("text_words") or []),
+            text_mode=d.get("text_mode") or "any",
+            date_from=datetime.fromisoformat(df) if df else None,
+            date_to=datetime.fromisoformat(dt) if dt else None,
+            site_slugs=list(d.get("site_slugs") or []),
+            tags=list(d.get("tags") or []),
+        )
+
 
 def _match_words(haystack: str, words: list[str], mode: str) -> bool:
     if not words:
@@ -1268,6 +1294,36 @@ def multiselect_tags(state: dict, preselected: list) -> list:
                 chosen.add(t)
 
 
+def recent_filter_picker(history: list) -> FilterSpec | None:
+    """Pick a previously-applied filter to re-apply. Returns it, or None."""
+    if not history:
+        return None
+    cursor = 0
+    while True:
+        clear_screen()
+        print()
+        print(c("  Recent filters", "title", "bold"))
+        print(c("    Pick one to apply it again.", "dim"))
+        print()
+        for i, spec in enumerate(history):
+            sel = (i == cursor)
+            arrow = c("  ▸ ", "accent") if sel else "    "
+            print(arrow + c(spec.summary(), "accent" if sel else "info",
+                            "bold" if sel else "info"))
+        print()
+        print(c("  ↑↓ navigate · Enter apply · Esc/backspace back", "dim"))
+
+        key = read_key()
+        if key in ("esc", "quit", "backspace"):
+            return None
+        if key == "up":
+            cursor = (cursor - 1) % len(history)
+        elif key == "down":
+            cursor = (cursor + 1) % len(history)
+        elif key == "enter":
+            return history[cursor]
+
+
 def filter_form(default_site_slug: str | None, bookmark_mode: bool = False) -> FilterSpec | None:
     """Modal form for compound filtering. Returns FilterSpec or None on cancel."""
     spec = FilterSpec()
@@ -1278,6 +1334,18 @@ def filter_form(default_site_slug: str | None, bookmark_mode: bool = False) -> F
     else:
         spec.site_slugs = [site_slug(s) for s in SITES]
     state = load_state()
+    history = get_filter_history(state)
+    known_slugs = {site_slug(s) for s in SITES}
+
+    def scope_for_mode(s: FilterSpec) -> FilterSpec:
+        """Fit a (possibly cross-context) spec's site scope to this form."""
+        s.site_slugs = [sl for sl in s.site_slugs if sl in known_slugs]
+        if bookmark_mode:
+            s.site_slugs = []
+        elif not s.site_slugs:
+            s.site_slugs = ([default_site_slug] if default_site_slug
+                            else [site_slug(x) for x in SITES])
+        return s
 
     site_options = [(site_slug(s), s["name"]) for s in SITES]
 
@@ -1285,7 +1353,11 @@ def filter_form(default_site_slug: str | None, bookmark_mode: bool = False) -> F
     # kinds: title_words, title_mode, text_words, text_mode, tags,
     #        date_from, date_to, site (with index in payload), action.
     def build_rows():
-        rows = [
+        rows = []
+        if history:
+            rows.append(("recent", None, f"Recent filters ({len(history)}) ▸"))
+            rows.append(("header", None, "New filter"))
+        rows += [
             ("title_words", None, "Title contains"),
             ("title_mode",  None, "Title match"),
         ]
@@ -1333,7 +1405,10 @@ def filter_form(default_site_slug: str | None, bookmark_mode: bool = False) -> F
             sel = (idx == cursor)
             arrow = c("  ▸ ", "accent") if sel else "    "
 
-            if kind == "title_words":
+            if kind == "recent":
+                print(arrow + c(label, "accent" if sel else "info",
+                                "bold" if sel else "info"))
+            elif kind == "title_words":
                 val = ", ".join(spec.title_words) if spec.title_words else "(empty)"
                 print(arrow + c(f"{label}: ", "title", "bold" if sel else "dim") +
                       c(val, "accent" if sel else "info"))
@@ -1360,9 +1435,9 @@ def filter_form(default_site_slug: str | None, bookmark_mode: bool = False) -> F
                 print(arrow + c(f"{label}: ", "title", "bold" if sel else "dim") +
                       c(val, "accent" if sel else "info"))
             elif kind == "header":
+                hint = "   (Space toggle, A=all, N=none)" if label == "Sites" else ""
                 print()
-                print("    " + c(label, "title", "bold") +
-                      c("   (Space toggle, A=all, N=none)", "dim"))
+                print("    " + c(label, "title", "bold") + c(hint, "dim"))
             elif kind == "site":
                 slug, name = site_options[payload]
                 checked = slug in spec.site_slugs
@@ -1405,7 +1480,14 @@ def filter_form(default_site_slug: str | None, bookmark_mode: bool = False) -> F
 
         kind, payload, label = rows[cursor]
 
-        if kind == "title_words":
+        if kind == "recent":
+            if key == "enter":
+                chosen = recent_filter_picker(history)
+                if chosen is not None:
+                    chosen = scope_for_mode(chosen)
+                    record_filter(state, chosen)   # re-applying bumps recency
+                    return chosen
+        elif kind == "title_words":
             if key == "enter":
                 term = input_line(c("  Title — comma-separate phrases (e.g. merkel, tax reform): ", "accent"))
                 spec.title_words = [w.strip().lower() for w in term.split(",") if w.strip()] if term else []
@@ -1450,6 +1532,7 @@ def filter_form(default_site_slug: str | None, bookmark_mode: bool = False) -> F
                     if not bookmark_mode and not spec.site_slugs:
                         warning = "Pick at least one site."
                         continue
+                    record_filter(state, spec)
                     return spec
                 if payload == "reset":
                     spec = FilterSpec()
@@ -2117,6 +2200,33 @@ def clear_resume(state: dict):
     _meta(state).pop("resume", None)
 
 
+_FILTER_HISTORY_MAX = 5
+
+
+def get_filter_history(state: dict) -> list:
+    """Return saved filter sets, newest first. Skips any corrupt entries."""
+    out = []
+    for d in _meta(state).get("filter_history", []) or []:
+        try:
+            out.append(FilterSpec.from_dict(d))
+        except Exception:
+            continue
+    return out
+
+
+def record_filter(state: dict, spec: "FilterSpec", path: str = STATE_FILE):
+    """Remember an applied filter (newest first, deduped, capped at 5).
+
+    Site-only specs carry no real constraints, so they aren't recorded."""
+    if spec.is_empty():
+        return
+    d = spec.to_dict()
+    hist = [h for h in (_meta(state).get("filter_history", []) or []) if h != d]
+    hist.insert(0, d)
+    _meta(state)["filter_history"] = hist[:_FILTER_HISTORY_MAX]
+    save_state(state, path)
+
+
 def should_show_whatsnew(last_seen, current: str, changelog: dict,
                          existing_user: bool = False) -> bool:
     """Show the popup on a real upgrade to a version we have notes for.
@@ -2196,7 +2306,7 @@ def show_help():
         ("Search & filter", [
             ("s", "Search by title"),
             ("S", "Search in article text"),
-            ("f", "Filter: title, text, tags, dates, sites"),
+            ("f", "Filter: title, text, tags, dates, sites (remembers recent)"),
             ("m", "Filter by month"),
             ("d", "Filter by day"),
             ("c", "Clear filter"),
