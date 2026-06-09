@@ -1429,6 +1429,7 @@ def paginate_posts(posts: list[dict], highlight: str | None = None, all_posts: l
     cursor = 0
     bookmarks = load_bookmarks()
     bm_urls = {b.get("url") for b in bookmarks}
+    state = load_state()
     has_text = any(p.get("text") for p in posts) if posts else False
 
     # Date filter state
@@ -1496,7 +1497,8 @@ def paginate_posts(posts: list[dict], highlight: str | None = None, all_posts: l
                 post = display[i]
                 is_bm = post.get("url") in bm_urls
                 is_sel = (i == cursor)
-                print_post_line(i + 1, post, highlight, bookmarked=is_bm, selected=is_sel)
+                print_post_line(i + 1, post, highlight, bookmarked=is_bm,
+                                selected=is_sel, read=is_read(state, post.get("url", "")))
 
         if show_chart and chart_lines:
             print()
@@ -1540,9 +1542,18 @@ def paginate_posts(posts: list[dict], highlight: str | None = None, all_posts: l
             show_word_cloud(display, title=f"Word cloud — {len(display)} articles" +
                             (f" matching '{hl_label}'" if hl_label else ""))
         elif key == "enter" and total > 0:
-            show_post_detail(display[cursor], highlight)
+            post = display[cursor]
+            show_post_detail(post, highlight)
+            set_read(state, post.get("url", ""), True)
+            save_state(state)
+            state = load_state()  # pick up any in-detail read toggle
             bookmarks = load_bookmarks()
             bm_urls = {b.get("url") for b in bookmarks}
+        elif key == "r" and total > 0:
+            url = display[cursor].get("url", "")
+            if url:
+                set_read(state, url, not is_read(state, url))
+                save_state(state)
         elif key == "b" and total > 0:
             post = display[cursor]
             if post.get("url") in bm_urls:
