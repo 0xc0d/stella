@@ -989,6 +989,16 @@ def show_post_detail(post: dict, highlight=None):
                 print(c("  |  [b] remove bookmark  [backspace] back", "dim"))
             else:
                 print(c("  [b] bookmark  [backspace] back", "dim"))
+        elif key == "r":
+            url = post.get("url", "")
+            if url:
+                _state = load_state()
+                set_read(_state, url, not is_read(_state, url))
+                save_state(_state)
+                print(c("  ✓ marked " + ("read" if is_read(_state, url) else "unread"),
+                        "accent"), end="\r", flush=True)
+                time.sleep(0.6)
+                print(" " * 40, end="\r", flush=True)
         elif key in ("backspace", "q", "esc", "quit"):
             break
 
