@@ -155,5 +155,34 @@ class FilterHistoryTest(unittest.TestCase):
         self.assertEqual(stella.get_filter_history(reloaded)[0].tags, ["x"])
 
 
+class DedupTest(unittest.TestCase):
+    def test_dedup_url_variants_and_title_date(self):
+        posts = [
+            {"date": "2026-06-09 10:00", "title": "Erol: world moving",
+             "url": "https://rrn.com.tr/en/erol/"},
+            {"date": "2026-06-09 10:00", "title": "Erol: world moving",
+             "url": "https://rrn.com.tr/erol"},          # /en/ + slash variant
+            {"date": "2026-06-09 10:00", "title": "Erol: world moving",
+             "url": "https://rrn.com.tr/other/path"},    # same title+date
+            {"date": "2026-06-08 09:00", "title": "Diff",
+             "url": "https://rrn.com.tr/diff"},
+            {"date": "2026-06-08 09:00", "title": "Diff",
+             "url": "https://rrn.com.tr/diff/"},          # exact (trailing slash)
+            {"date": "2026-06-07 08:00", "title": "No URL", "url": ""},
+            {"date": "2026-06-07 08:00", "title": "No URL", "url": ""},
+        ]
+        out = stella._dedup_posts(posts)
+        self.assertEqual(len(out), 3)
+        self.assertEqual([p["title"] for p in out],
+                         ["Erol: world moving", "Diff", "No URL"])
+
+    def test_dedup_keeps_distinct(self):
+        posts = [
+            {"date": "2026-06-09 10:00", "title": "A", "url": "u1"},
+            {"date": "2026-06-09 10:00", "title": "B", "url": "u2"},
+        ]
+        self.assertEqual(len(stella._dedup_posts(posts)), 2)
+
+
 if __name__ == "__main__":
     unittest.main()

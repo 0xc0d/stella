@@ -20,7 +20,7 @@ import random
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
-__version__ = "1.1.5"
+__version__ = "1.1.6"
 
 GITHUB_OWNER = "0xc0d"
 GITHUB_REPO = "stella"
@@ -28,6 +28,10 @@ UPDATE_BRANCH = "main"
 UPDATE_FILES = ["stella.py", "scraper.py", "Stella.cmd",
                 "repair_text.py", "backfill.py"]
 CHANGELOG = {
+    "1.1.6": [
+        "Fix: the same article no longer appears twice — the list now dedupes "
+        "by URL (ignoring /en/ and trailing-slash variants) and title+date.",
+    ],
     "1.1.5": [
         "Fix: scrolling the article list no longer flickers — the list now "
         "repaints in place instead of clearing the whole screen each keypress.",
@@ -1140,8 +1144,28 @@ def shard_path(slug: str, year: int) -> str:
     return os.path.join(DATA_DIR, f"posts_{slug}_{year}.csv")
 
 
+def _dedup_posts(posts: list[dict]) -> list[dict]:
+    """Drop duplicate articles, keeping the first seen. A post is a dup if its
+    URL matches (trailing slash / leading 'en/' ignored, so rrn .../x and
+    .../en/x collapse) or, lacking a URL, its (date, title) matches."""
+    seen_urls, seen_td, out = set(), set(), []
+    for p in posts:
+        url = (p.get("url") or "").strip().rstrip("/").lower()
+        key = re.sub(r"^(https?://[^/]+)/en/", r"\1/", url) if url else ""
+        td = (p.get("date", ""), (p.get("title", "") or "").strip().lower())
+        # Dup if the (slash/'en'-normalized) URL repeats, or the same title ran
+        # on the same date (catches re-scrapes that landed a new URL variant).
+        if (key and key in seen_urls) or (td[1] and td in seen_td):
+            continue
+        if key:
+            seen_urls.add(key)
+        seen_td.add(td)
+        out.append(p)
+    return out
+
+
 def load_shards(slug: str, years: list[int] | None = None) -> list[dict]:
-    """Load year shards for slug (newest-first). years=None loads all shards."""
+    """Load year shards for slug (newest-first, deduped). years=None loads all."""
     all_shards = find_shards(slug)
     if years is not None:
         shards = [(y, p) for y, p in all_shards if y in years]
@@ -1154,7 +1178,7 @@ def load_shards(slug: str, years: list[int] | None = None) -> list[dict]:
                 posts.extend(load_csv(path))
             except Exception:
                 pass
-    return posts
+    return _dedup_posts(posts)
 
 
 def count_shards(slug: str) -> int:
