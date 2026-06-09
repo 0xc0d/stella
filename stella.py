@@ -1474,6 +1474,37 @@ def tag_picker(state: dict, url: str):
                     save_state(state)
 
 
+def pick_tag(state: dict):
+    """Let the user choose one tag to filter by. Returns the tag string or None."""
+    tags = all_tags(state)
+    if not tags:
+        clear_screen()
+        print(c("\n  No tags yet. Press any key...", "dim"))
+        read_key()
+        return None
+    cursor = 0
+    while True:
+        clear_screen()
+        print_header("Filter by tag")
+        print()
+        for i, t in enumerate(tags):
+            if i == cursor:
+                print(f"  {c('▸', 'accent')} {c(t, 'title', 'bold')}")
+            else:
+                print(f"    {c(t, 'dim')}")
+        print()
+        print(c("  ↑↓ choose   Enter select   [backspace] cancel", "dim"))
+        key = read_key()
+        if key in ("backspace", "esc", "q", "quit"):
+            return None
+        elif key == "up":
+            cursor = (cursor - 1) % len(tags)
+        elif key == "down":
+            cursor = (cursor + 1) % len(tags)
+        elif key == "enter":
+            return tags[cursor]
+
+
 def paginate_posts(posts: list[dict], highlight: str | None = None, all_posts: list[dict] | None = None,
                    db_total: int | None = None, site: dict | None = None,
                    slug: str | None = None, all_loaded: bool = True):
@@ -1498,6 +1529,10 @@ def paginate_posts(posts: list[dict], highlight: str | None = None, all_posts: l
         if filter_kind is None:
             display = posts
             filter_label = None
+        elif filter_kind == "tag":
+            display = [p for p in posts
+                       if filter_value in get_tags(state, p.get("url", ""))]
+            filter_label = f"tag: {filter_value}"
         else:
             display = []
             for p in posts:
@@ -1614,6 +1649,12 @@ def paginate_posts(posts: list[dict], highlight: str | None = None, all_posts: l
         elif key == "g" and total > 0:
             tag_picker(state, display[cursor].get("url", ""))
             state = load_state()
+        elif key == "G":
+            chosen = pick_tag(state)
+            if chosen is not None:
+                filter_kind = "tag"
+                filter_value = chosen
+                cursor = 0
         elif key == "b" and total > 0:
             post = display[cursor]
             if post.get("url") in bm_urls:
