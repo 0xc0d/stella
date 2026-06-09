@@ -1572,7 +1572,7 @@ def paginate_posts(posts: list[dict], highlight: str | None = None, all_posts: l
     has_text = any(p.get("text") for p in posts) if posts else False
 
     # Date filter state
-    filter_kind = None     # None | "month" | "day" | "tag"
+    filter_kind = None     # None | "month" | "day"  (legacy "tag" only from old resume data)
     filter_value = None    # None | (year, month) | datetime
 
     if resume:
