@@ -1627,7 +1627,7 @@ def paginate_posts(posts: list[dict], highlight: str | None = None, all_posts: l
         print(
             c(f" {cur_disp}/{total} ", "accent") +
             c(f" p.{page + 1}/{total_pages} ", "dim") +
-            c(f" ↑↓ move  ←→ page  [s] title  [S] txt  [f] filter  [b] bookmark  [B] bookmarks{filter_hint}{update_hint}  [?] help", "dim")
+            c(f" ↑↓ move  ←→ page  [s] title  [r] read  [g] tag  [G] tag filter  [b] bookmark  [B] bookmarks{filter_hint}{update_hint}  [?] help", "dim")
         )
         with _update_lock:
             _pending_v = _update_status["remote_version"] if _update_status["downloaded"] else None
@@ -2144,14 +2144,18 @@ def show_help():
         ]),
         ("Actions", [
             ("y", "Copy URL to clipboard"),
+            ("r", "Mark article read / unread"),
+            ("g", "Edit tags on current article"),
+            ("G", "Filter list by tag"),
             ("b", "Bookmark / unbookmark current article"),
-            ("B", "View all bookmarks"),
+            ("B", "View all bookmarks (with tag filter)"),
             ("t", "Toggle timeline chart"),
             ("w", "Word cloud"),
         ]),
         ("Updates", [
             ("u", "Quick update (fetch latest)"),
             ("U", "Scrape custom date range"),
+            ("A", "Apply a downloaded update now (when available)"),
         ]),
         ("Site selector", [
             ("s", "Search across all sites"),
