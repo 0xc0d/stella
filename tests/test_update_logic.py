@@ -22,5 +22,29 @@ class WhatsNewGateTest(unittest.TestCase):
         self.assertFalse(stella.should_show_whatsnew("1.0.2", "1.2.0", self.CHANGELOG))
 
 
+from datetime import datetime
+
+
+class FilterSerializeTest(unittest.TestCase):
+    def test_none(self):
+        self.assertEqual(stella._serialize_filter(None, None), None)
+        self.assertEqual(stella._deserialize_filter(None, None), (None, None))
+
+    def test_month(self):
+        v = stella._serialize_filter("month", (2026, 5))
+        self.assertEqual(v, [2026, 5])
+        self.assertEqual(stella._deserialize_filter("month", v), ("month", (2026, 5)))
+
+    def test_day(self):
+        d = datetime(2026, 5, 6)
+        v = stella._serialize_filter("day", d)
+        self.assertEqual(stella._deserialize_filter("day", v)[1].date(), d.date())
+
+    def test_tag(self):
+        v = stella._serialize_filter("tag", "politics")
+        self.assertEqual(v, "politics")
+        self.assertEqual(stella._deserialize_filter("tag", v), ("tag", "politics"))
+
+
 if __name__ == "__main__":
     unittest.main()

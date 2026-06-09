@@ -1516,7 +1516,8 @@ def pick_tag(state: dict):
 
 def paginate_posts(posts: list[dict], highlight: str | None = None, all_posts: list[dict] | None = None,
                    db_total: int | None = None, site: dict | None = None,
-                   slug: str | None = None, all_loaded: bool = True):
+                   slug: str | None = None, all_loaded: bool = True,
+                   resume: dict | None = None):
     """Display posts with cursor navigation. ↑↓ moves selection, Enter opens article."""
     if all_posts is None:
         all_posts = posts
@@ -1532,6 +1533,18 @@ def paginate_posts(posts: list[dict], highlight: str | None = None, all_posts: l
     # Date filter state
     filter_kind = None     # None | "month" | "day" | "tag"
     filter_value = None    # None | (year, month) | datetime
+
+    if resume:
+        fk = resume.get("filter_kind")
+        filter_kind, filter_value = _deserialize_filter(fk, resume.get("filter_value"))
+        cursor = resume.get("cursor", 0)
+        open_url = resume.get("open_url")
+        if open_url:
+            match = next((p for p in posts if p.get("url") == open_url), None)
+            if match is not None:
+                show_post_detail(match)
+                set_read(state, open_url, True)
+                save_state(state)
 
     while True:
         # Derive displayed list from filter
@@ -2042,6 +2055,26 @@ def should_show_whatsnew(last_seen, current: str, changelog: dict) -> bool:
     if last_seen == current:
         return False
     return current in changelog
+
+
+def _serialize_filter(filter_kind, filter_value):
+    if filter_kind == "month":
+        return [filter_value[0], filter_value[1]]
+    if filter_kind == "day":
+        return filter_value.isoformat()
+    if filter_kind == "tag":
+        return filter_value
+    return None
+
+
+def _deserialize_filter(filter_kind, value):
+    if filter_kind == "month" and value:
+        return "month", (value[0], value[1])
+    if filter_kind == "day" and value:
+        return "day", datetime.fromisoformat(value)
+    if filter_kind == "tag" and value:
+        return "tag", value
+    return None, None
 
 
 # ---------------------------------------------------------------------------
@@ -2990,10 +3023,35 @@ def update_banner_line() -> str | None:
 # Main entry point
 # ---------------------------------------------------------------------------
 
+def _restore_from_resume(resume: dict):
+    """Best-effort: jump back into the site/list/article the user left."""
+    slug = resume.get("slug")
+    if not slug:
+        return
+    site = next((s for s in SITES if site_slug(s) == slug), None)
+    if site is None:
+        return  # site no longer exists; start at selector
+    posts = load_shards(slug)
+    paginate_posts(posts, all_posts=posts, site=site, slug=slug, resume=resume)
+
+
 def main():
     _enable_win_ansi()
     apply_pending_update_if_any()
     start_update_checker()
+
+    state = load_state()
+    current = __version__
+    if should_show_whatsnew(get_last_seen_version(state), current, CHANGELOG):
+        show_whatsnew(current)
+    set_last_seen_version(state, current)
+    save_state(state)
+
+    resume = get_resume(state)
+    if resume:
+        clear_resume(state)
+        save_state(state)
+        _restore_from_resume(resume)
 
     # Backward compat: direct CSV path as argument
     if len(sys.argv) > 1:
