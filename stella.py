@@ -956,6 +956,12 @@ def show_post_detail(post: dict, highlight=None):
         print(c("  (no article text available)", "dim"))
     print(c("─" * width, "bar"))
 
+    # Tags on this article
+    _tags = get_tags(load_state(), post.get("url", ""))
+    if _tags:
+        print(c("  🏷 ", "accent") + c(", ".join(_tags), "accent", "bold"))
+        print(c("─" * width, "bar"))
+
     # Bookmark status and controls
     bookmarks = load_bookmarks()
     is_bm = post.get("url") in {b.get("url") for b in bookmarks}
@@ -964,11 +970,11 @@ def show_post_detail(post: dict, highlight=None):
         print(c("  ★ Bookmarked", "bookmark"), end="")
         wc_hint = "  [w] word cloud" if has_text else ""
         search_hint = "  [/] search" if has_text else ""
-        print(c(f"  |  [b] remove bookmark  [r] read{wc_hint}{search_hint}  [backspace] back", "dim"))
+        print(c(f"  |  [b] remove bookmark  [r] read  [g] tag{wc_hint}{search_hint}  [backspace] back", "dim"))
     else:
         wc_hint = "  [w] word cloud" if has_text else ""
         search_hint = "  [/] search" if has_text else ""
-        print(c(f"  [b] bookmark  [r] read{wc_hint}{search_hint}  [backspace] back", "dim"))
+        print(c(f"  [b] bookmark  [r] read  [g] tag{wc_hint}{search_hint}  [backspace] back", "dim"))
 
     while True:
         key = read_key()
@@ -993,9 +999,9 @@ def show_post_detail(post: dict, highlight=None):
             print(f"\033[A\033[2K", end="")  # move up, clear line
             if is_bm:
                 print(c("  ★ Bookmarked", "bookmark"), end="")
-                print(c("  |  [b] remove bookmark  [r] read  [backspace] back", "dim"))
+                print(c("  |  [b] remove bookmark  [r] read  [g] tag  [backspace] back", "dim"))
             else:
-                print(c("  [b] bookmark  [r] read  [backspace] back", "dim"))
+                print(c("  [b] bookmark  [r] read  [g] tag  [backspace] back", "dim"))
         elif key == "r":
             url = post.get("url", "")
             if url:
@@ -1007,6 +1013,10 @@ def show_post_detail(post: dict, highlight=None):
                         "accent"), end="\r", flush=True)
                 time.sleep(0.6)
                 print(" " * 40, end="\r", flush=True)
+        elif key == "g":
+            _state = load_state()
+            tag_picker(_state, post.get("url", ""))
+            return show_post_detail(post, highlight)  # re-render with updated tags
         elif key in ("backspace", "q", "esc", "quit"):
             break
 
