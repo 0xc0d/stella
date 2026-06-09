@@ -10,6 +10,7 @@ all_posts.json
 bookmarks.json
 stella_bookmarks.json
 stella_seen.json
+stella_state.json
 
 # Logs
 *.log
