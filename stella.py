@@ -20,7 +20,7 @@ import random
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
-__version__ = "1.1.1"
+__version__ = "1.1.2"
 
 GITHUB_OWNER = "0xc0d"
 GITHUB_REPO = "stella"
@@ -28,6 +28,12 @@ UPDATE_BRANCH = "main"
 UPDATE_FILES = ["stella.py", "scraper.py", "Stella.cmd",
                 "repair_text.py", "backfill.py"]
 CHANGELOG = {
+    "1.1.2": [
+        "Fix: screen now fully clears between views on Windows Terminal — no "
+        "more ghosted/overlapping text behind the menu or the dancer.",
+        "Stella now dances once at startup, not every time you return to the "
+        "site list.",
+    ],
     "1.1.1": [
         "Fix: every site showed \"no data\" when Stella was launched from a "
         "folder other than its own — CSVs are now found beside stella.py.",
@@ -54,6 +60,11 @@ DATA_DIR = SCRIPT_DIR
 from scraper import SITES, scrape_site, enrich_with_text, save_csv, find_start_page, fetch_article_text
 
 IS_WINDOWS = os.name == "nt"
+# Set True once ANSI/VT processing is confirmed on (always on non-Windows, and
+# on Windows 10+ after _enable_win_ansi succeeds). Gates the ANSI screen clear.
+_VT_ENABLED = not IS_WINDOWS
+# Dancer plays once per run (on the first site selector), not every return to it.
+_dance_shown = False
 
 if IS_WINDOWS:
     import msvcrt
@@ -173,14 +184,19 @@ def term_size():
 
 
 def clear_screen():
-    if IS_WINDOWS:
-        os.system("cls")
+    # In Windows Terminal `os.system("cls")` leaves the previous frame in the
+    # scrollback, so overlay draws (e.g. the dancer) ghost on top of it. The
+    # ANSI form wipes screen (2J) + scrollback (3J) and homes the cursor (H),
+    # which is clean everywhere VT is on. Fall back to cls on pre-VT consoles.
+    if _VT_ENABLED:
+        print("\033[3J\033[2J\033[H", end="", flush=True)
     else:
-        print("\033[2J\033[H", end="", flush=True)
+        os.system("cls")
 
 
 def _enable_win_ansi():
     """Enable ANSI escape codes on Windows 10+."""
+    global _VT_ENABLED
     if not IS_WINDOWS:
         return
     try:
@@ -191,6 +207,7 @@ def _enable_win_ansi():
         mode = ctypes.c_ulong()
         kernel32.GetConsoleMode(handle, ctypes.byref(mode))
         kernel32.SetConsoleMode(handle, mode.value | 0x0004)
+        _VT_ENABLED = True
     except Exception:
         pass
 
@@ -2415,7 +2432,10 @@ def global_search():
 
 def site_selector() -> int | None:
     """Show list of sites. Returns SITES index or None to quit."""
-    pending_dance = True  # overlay the dancer on top of the rendered menu, once
+    global _dance_shown
+    # Dance only on the first selector of the run, not every time the user
+    # backs out of a site into the selector again.
+    pending_dance = not _dance_shown
     # Pre-scan CSV info for each site
     site_info = []
     for i, site in enumerate(SITES):
@@ -2464,6 +2484,7 @@ def site_selector() -> int | None:
         if pending_dance:
             dance_for_stella()       # floats on top of the menu just rendered above
             pending_dance = False
+            _dance_shown = True      # don't dance again on later selector visits
             continue                 # redraw the menu cleanly without the dancer
 
         key = read_key()
