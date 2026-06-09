@@ -20,7 +20,7 @@ import random
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
-__version__ = "1.1.2"
+__version__ = "1.1.3"
 
 GITHUB_OWNER = "0xc0d"
 GITHUB_REPO = "stella"
@@ -28,6 +28,10 @@ UPDATE_BRANCH = "main"
 UPDATE_FILES = ["stella.py", "scraper.py", "Stella.cmd",
                 "repair_text.py", "backfill.py"]
 CHANGELOG = {
+    "1.1.3": [
+        "Fix: scrolling no longer flickers/ghosts in Windows Terminal.",
+        "Fix: what's-new notes now wrap inside their box.",
+    ],
     "1.1.2": [
         "Fix: screen now fully clears between views on Windows Terminal — no "
         "more ghosted/overlapping text behind the menu or the dancer.",
@@ -184,10 +188,19 @@ def term_size():
 
 
 def clear_screen():
-    # In Windows Terminal `os.system("cls")` leaves the previous frame in the
-    # scrollback, so overlay draws (e.g. the dancer) ghost on top of it. The
-    # ANSI form wipes screen (2J) + scrollback (3J) and homes the cursor (H),
-    # which is clean everywhere VT is on. Fall back to cls on pre-VT consoles.
+    # Per-frame clear: erase screen (2J) + home (H). This is the redraw used on
+    # every keypress, so it must NOT touch the scrollback — wiping scrollback
+    # (3J) each frame makes Windows Terminal flicker/jump while scrolling. The
+    # one-time scrollback wipe lives in hard_clear(), called once at startup.
+    if _VT_ENABLED:
+        print("\033[2J\033[H", end="", flush=True)
+    else:
+        os.system("cls")
+
+
+def hard_clear():
+    """One-shot full wipe incl. scrollback — kills any leftover frame behind us.
+    Use once at startup, never per-frame (3J every frame flickers in wt)."""
     if _VT_ENABLED:
         print("\033[3J\033[2J\033[H", end="", flush=True)
     else:
@@ -3024,11 +3037,18 @@ def dance_for_stella():
 
 
 def show_whatsnew(version: str):
+    import textwrap
     lines = CHANGELOG.get(version, [])
     cols, rows = term_size()
     title = f"What's new in Stella v{version}"
-    body = [title, ""] + [f"• {ln}" for ln in lines] + ["", "(press any key)"]
-    inner_w = max(40, min(76, max(len(s) for s in body) + 4))
+    inner_w = max(40, min(76, cols - 4))
+    wrap_w = inner_w - 4  # room for the "• " bullet + a right margin
+    wrapped = []
+    for ln in lines:
+        segs = textwrap.wrap(ln, wrap_w) or [""]
+        wrapped.append("• " + segs[0])
+        wrapped.extend("  " + seg for seg in segs[1:])  # hang-indent continuations
+    body = [title, ""] + wrapped + ["", "(press any key)"]
     box_h = len(body) + 2
     if cols < inner_w + 4 or rows < box_h + 2:
         clear_screen()
@@ -3341,6 +3361,7 @@ def _restore_from_resume(resume: dict):
 
 def main():
     _enable_win_ansi()
+    hard_clear()  # one-time scrollback wipe so nothing ghosts behind the first frame
     apply_pending_update_if_any()
     start_update_checker()
 
