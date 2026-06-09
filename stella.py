@@ -1268,7 +1268,7 @@ def multiselect_tags(state: dict, preselected: list) -> list:
                 chosen.add(t)
 
 
-def filter_form(default_site_slug: str | None) -> FilterSpec | None:
+def filter_form(default_site_slug: str | None, bookmark_mode: bool = False) -> FilterSpec | None:
     """Modal form for compound filtering. Returns FilterSpec or None on cancel."""
     spec = FilterSpec()
     if default_site_slug is not None:
@@ -1286,15 +1286,21 @@ def filter_form(default_site_slug: str | None) -> FilterSpec | None:
         rows = [
             ("title_words", None, "Title contains"),
             ("title_mode",  None, "Title match"),
-            ("text_words",  None, "Text contains"),
-            ("text_mode",   None, "Text match"),
+        ]
+        if not bookmark_mode:                      # bookmarks have no article text
+            rows += [
+                ("text_words",  None, "Text contains"),
+                ("text_mode",   None, "Text match"),
+            ]
+        rows += [
             ("tags",        None, "Tags"),
             ("date_from",   None, "Date from"),
             ("date_to",     None, "Date to"),
-            ("header",      None, "Sites"),
         ]
-        for i, (slug, name) in enumerate(site_options):
-            rows.append(("site", i, name))
+        if not bookmark_mode:                      # bookmarks aren't scoped by site
+            rows.append(("header", None, "Sites"))
+            for i, (slug, name) in enumerate(site_options):
+                rows.append(("site", i, name))
         rows.extend([
             ("action", "apply",  "Apply"),
             ("action", "reset",  "Reset"),
@@ -1374,7 +1380,7 @@ def filter_form(default_site_slug: str | None) -> FilterSpec | None:
         if warning:
             print(c(f"  {warning}", "warn"))
             warning = ""
-        print(c("  ↑↓ navigate · Enter activate · Space toggle · g apply · Esc/backspace cancel", "dim"))
+        print(c("  ↑↓ navigate · Enter activate · Space toggle · Esc/backspace cancel", "dim"))
 
         key = read_key()
 
@@ -1396,11 +1402,6 @@ def filter_form(default_site_slug: str | None) -> FilterSpec | None:
             continue
 
         kind, payload, label = rows[cursor]
-
-        # Global apply hotkey
-        if key == "g":
-            key = "enter"
-            kind, payload = "action", "apply"
 
         if kind == "title_words":
             if key == "enter":
@@ -1444,7 +1445,7 @@ def filter_form(default_site_slug: str | None) -> FilterSpec | None:
         elif kind == "action":
             if key == "enter":
                 if payload == "apply":
-                    if not spec.site_slugs:
+                    if not bookmark_mode and not spec.site_slugs:
                         warning = "Pick at least one site."
                         continue
                     return spec
@@ -1907,7 +1908,7 @@ def show_bookmarks(posts: list[dict] | None = None):
             if cursor > 0:
                 cursor -= 1
         elif key == "f":
-            picked = filter_form(default_site_slug=None)
+            picked = filter_form(default_site_slug=None, bookmark_mode=True)
             if picked is not None:
                 spec = picked
                 cursor = 0
