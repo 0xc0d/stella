@@ -12,6 +12,8 @@ Two related features:
 2. **Tagged bookmarks / tags** — any article can carry multiple tags (independent
    of bookmark state). Tags are chosen from existing tags or created on the fly.
    Tagged articles can be browsed by tag.
+3. **"What's new" popup** — after an update to a newer version, show a short
+   centered popup once describing the new version and how the additions work.
 
 ## Non-goals (YAGNI)
 
@@ -34,6 +36,19 @@ bookmarks):
 ```
 
 File: `stella_state.json` (sibling of `stella_seen.json` / `bookmarks.json`).
+
+A reserved non-URL key `"__meta__"` holds app metadata, currently the
+"what's new" bookkeeping:
+
+```json
+{
+  "__meta__": { "last_seen_version": "1.1.0" },
+  "https://rrn.com.tr/...": { "read": true, "tags": ["politics"] }
+}
+```
+
+All per-article helpers (`all_tags`, any iteration over articles) **must skip
+keys starting with `__`** so the meta row is never treated as an article.
 
 Rationale:
 
@@ -106,6 +121,28 @@ A picker screen for the current article:
 `t` (chart), `w` (word cloud), `b`/`B` (bookmark/bookmarks), `s`/`S` (search),
 `m`/`d`/`c` (filters), `u`/`U` (update), `y` (copy) are already taken — the new
 keys avoid all of them. Update the `?` help screen and the footer hint line.
+
+### 6. "What's new" popup
+
+- New `CHANGELOG: dict[str, list[str]]` constant in `stella.py`, keyed by version
+  string → short bullet lines describing additions and how they work. Kept in sync
+  with `__version__` on each release.
+- New helpers `get_last_seen_version(state)` / `set_last_seen_version(state, v)`
+  read/write `state["__meta__"]["last_seen_version"]`.
+- On **startup** (after `load_state`, before the site selector): if
+  `last_seen_version != __version__` and `__version__ in CHANGELOG`, render a
+  centered popup (reuse the existing dancer-modal rendering / box-drawing code)
+  titled `What's new in Stella v{__version__}` listing `CHANGELOG[__version__]`,
+  with a "press any key" dismiss. Then call `set_last_seen_version(state,
+  __version__)` + `save_state` so it never shows again for this version.
+- **Current version only** (user choice): only `CHANGELOG[__version__]` is shown,
+  not stacked notes for skipped versions.
+- First-ever run (no `__meta__`): set `last_seen_version = __version__` silently
+  **without** showing the popup, so new installs don't get a changelog for a
+  version they never "upgraded" from.
+
+This feature ships as version **1.1.0**; bump `__version__` accordingly and add a
+`"1.1.0"` entry to `CHANGELOG` covering read tracking + tags.
 
 ## Site-level "+N new" badge
 
