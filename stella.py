@@ -1521,7 +1521,7 @@ def paginate_posts(posts: list[dict], highlight: str | None = None, all_posts: l
     has_text = any(p.get("text") for p in posts) if posts else False
 
     # Date filter state
-    filter_kind = None     # None | "month" | "day"
+    filter_kind = None     # None | "month" | "day" | "tag"
     filter_value = None    # None | (year, month) | datetime
 
     while True:
@@ -1837,6 +1837,7 @@ def show_bookmarks(posts: list[dict] | None = None):
             show_post_detail(full_post)
             set_read(state, bm.get("url", ""), True)
             save_state(state)
+            state = load_state()  # pick up any in-detail read toggle
         elif key == "r" and total > 0:
             remove_bookmark(shown[cursor].get("url", ""))
             bookmarks = load_bookmarks()
