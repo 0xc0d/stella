@@ -1832,6 +1832,8 @@ def set_tags(state: dict, url: str, tags: list):
         return
     seen = []
     for t in tags:
+        if not isinstance(t, str):
+            continue
         n = normalize_tag(t)
         if n and n not in seen:
             seen.append(n)

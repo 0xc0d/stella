@@ -70,6 +70,11 @@ class StateStoreTest(unittest.TestCase):
         self.assertEqual(stella.get_last_seen_version(state), "1.1.0")
         self.assertNotIn("__meta__", stella.all_tags(state))
 
+    def test_non_string_tags_skipped(self):
+        state = {}
+        stella.set_tags(state, "u1", ["ok", None, 42, "good"])
+        self.assertEqual(stella.get_tags(state, "u1"), ["ok", "good"])
+
     def test_resume_roundtrip(self):
         state = {}
         self.assertIsNone(stella.get_resume(state))
