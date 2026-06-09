@@ -30,6 +30,8 @@ UPDATE_FILES = ["stella.py", "scraper.py", "Stella.cmd",
 UPDATE_CHECK_INTERVAL_SEC = 10 * 60
 UPDATE_RETRY_INTERVAL_SEC = 60
 
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+
 from scraper import SITES, scrape_site, enrich_with_text, save_csv, find_start_page, fetch_article_text
 
 IS_WINDOWS = os.name == "nt"
@@ -1757,6 +1759,129 @@ def count_unread(slug: str) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Per-article state (read + tags) and app metadata
+#
+# stella_state.json keyed by article URL:
+#   { "__meta__": {"last_seen_version": "1.1.0", "resume": {...}},
+#     "https://...": {"read": true, "tags": ["politics"]} }
+# Keys starting with "__" are metadata, never treated as articles.
+# ---------------------------------------------------------------------------
+
+STATE_FILE = os.path.join(SCRIPT_DIR, "stella_state.json")
+_META_KEY = "__meta__"
+
+
+def load_state(path: str = STATE_FILE) -> dict:
+    if os.path.exists(path):
+        try:
+            with open(path, encoding="utf-8") as f:
+                data = json.load(f)
+                if isinstance(data, dict):
+                    return data
+        except Exception:
+            pass
+    return {}
+
+
+def save_state(state: dict, path: str = STATE_FILE):
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(state, f, ensure_ascii=False, indent=2)
+
+
+def _row(state: dict, url: str) -> dict:
+    """Get or create the per-article row for url."""
+    row = state.get(url)
+    if not isinstance(row, dict):
+        row = {}
+        state[url] = row
+    return row
+
+
+def _prune(state: dict, url: str):
+    """Drop a row that carries no read flag and no tags, to keep the file small."""
+    row = state.get(url)
+    if isinstance(row, dict) and not row.get("read") and not row.get("tags"):
+        state.pop(url, None)
+
+
+def is_read(state: dict, url: str) -> bool:
+    row = state.get(url)
+    return bool(isinstance(row, dict) and row.get("read"))
+
+
+def set_read(state: dict, url: str, value: bool):
+    if not url:
+        return
+    _row(state, url)["read"] = bool(value)
+    _prune(state, url)
+
+
+def normalize_tag(tag: str) -> str:
+    return tag.strip().lower()
+
+
+def get_tags(state: dict, url: str) -> list:
+    row = state.get(url)
+    if isinstance(row, dict) and isinstance(row.get("tags"), list):
+        return list(row["tags"])
+    return []
+
+
+def set_tags(state: dict, url: str, tags: list):
+    if not url:
+        return
+    seen = []
+    for t in tags:
+        n = normalize_tag(t)
+        if n and n not in seen:
+            seen.append(n)
+    row = _row(state, url)
+    if seen:
+        row["tags"] = seen
+    else:
+        row.pop("tags", None)
+    _prune(state, url)
+
+
+def all_tags(state: dict) -> list:
+    tags = set()
+    for url, row in state.items():
+        if url.startswith("__") or not isinstance(row, dict):
+            continue
+        for t in row.get("tags", []) or []:
+            tags.add(t)
+    return sorted(tags)
+
+
+def _meta(state: dict) -> dict:
+    m = state.get(_META_KEY)
+    if not isinstance(m, dict):
+        m = {}
+        state[_META_KEY] = m
+    return m
+
+
+def get_last_seen_version(state: dict):
+    return _meta(state).get("last_seen_version")
+
+
+def set_last_seen_version(state: dict, version: str):
+    _meta(state)["last_seen_version"] = version
+
+
+def get_resume(state: dict):
+    return _meta(state).get("resume")
+
+
+def set_resume(state: dict, resume: dict):
+    _meta(state)["resume"] = resume
+
+
+def clear_resume(state: dict):
+    _meta(state).pop("resume", None)
+
+
+# ---------------------------------------------------------------------------
 # Clipboard copy
 # ---------------------------------------------------------------------------
 
@@ -2469,8 +2594,6 @@ def dance_for_stella():
 # import time and closes the handle, so on-disk swaps don't disturb the
 # running process. The new code only loads on the next launch.
 # ---------------------------------------------------------------------------
-
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 _update_status = {
     "downloaded": False,
