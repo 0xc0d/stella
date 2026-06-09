@@ -686,10 +686,8 @@ def print_post_line(i: int, post: dict, highlight=None,
             if j < len(matches):
                 title_str += c(matches[j], "highlight", "bold")
     else:
-        if read:
-            title_str = c(title, "dim")
-        else:
-            title_str = c(title, "title", "bold")
+        base_style = ("dim",) if read else ("title", "bold")
+        title_str = c(title, *base_style)
 
     if selected:
         # Full-line reverse video with search term highlight
@@ -993,9 +991,10 @@ def show_post_detail(post: dict, highlight=None):
             url = post.get("url", "")
             if url:
                 _state = load_state()
-                set_read(_state, url, not is_read(_state, url))
+                new_value = not is_read(_state, url)
+                set_read(_state, url, new_value)
                 save_state(_state)
-                print(c("  ✓ marked " + ("read" if is_read(_state, url) else "unread"),
+                print(c("  ✓ marked " + ("read" if new_value else "unread"),
                         "accent"), end="\r", flush=True)
                 time.sleep(0.6)
                 print(" " * 40, end="\r", flush=True)
