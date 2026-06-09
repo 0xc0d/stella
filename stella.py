@@ -3216,8 +3216,9 @@ def main():
         save_state(state)
         _restore_from_resume(resume)
 
-    # Backward compat: direct CSV path as argument
-    if len(sys.argv) > 1:
+    # Backward compat: direct CSV path as argument (skip if we just restored a
+    # resume — that launch belongs to the update flow, not a CSV invocation)
+    if not resume and len(sys.argv) > 1:
         csv_path = sys.argv[1]
         posts = load_csv(csv_path)
         if not posts:
