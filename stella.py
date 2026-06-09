@@ -17,84 +17,22 @@ import calendar
 import time
 import threading
 import random
-import atexit
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
-__version__ = "1.1.8"
+__version__ = "1.1.9"  # exact v1.0.2 (2026-05-07) code; version bumped so auto-update ships the rollback
 
 GITHUB_OWNER = "0xc0d"
 GITHUB_REPO = "stella"
 UPDATE_BRANCH = "main"
 UPDATE_FILES = ["stella.py", "scraper.py", "Stella.cmd",
                 "repair_text.py", "backfill.py"]
-CHANGELOG = {
-    "1.1.8": [
-        "Fix: the list now always shows from the top and the view follows the "
-        "cursor — Stella runs on its own full screen, so rows no longer scroll "
-        "off the top.",
-        "The mouse wheel now moves the selection up/down in lists. Article text "
-        "still scrolls natively.",
-    ],
-    "1.1.7": [
-        "Revert the in-place repaint from 1.1.5 — it stacked text on long "
-        "lines and broke mouse-scroll. Back to a clean full clear (instant "
-        "ANSI, no flickery cls subprocess).",
-        "Scraping no longer stores duplicate articles (URL-variant aware).",
-    ],
-    "1.1.6": [
-        "Fix: the same article no longer appears twice — the list now dedupes "
-        "by URL (ignoring /en/ and trailing-slash variants) and title+date.",
-    ],
-    "1.1.5": [
-        "Fix: scrolling the article list no longer flickers — the list now "
-        "repaints in place instead of clearing the whole screen each keypress.",
-    ],
-    "1.1.4": [
-        "Fix: Stella now runs in the classic console instead of Windows "
-        "Terminal, which was trailing/ghosting text while scrolling.",
-    ],
-    "1.1.3": [
-        "Fix: scrolling no longer flickers/ghosts in Windows Terminal.",
-        "Fix: what's-new notes now wrap inside their box.",
-    ],
-    "1.1.2": [
-        "Fix: screen now fully clears between views on Windows Terminal — no "
-        "more ghosted/overlapping text behind the menu or the dancer.",
-        "Stella now dances once at startup, not every time you return to the "
-        "site list.",
-    ],
-    "1.1.1": [
-        "Fix: every site showed \"no data\" when Stella was launched from a "
-        "folder other than its own — CSVs are now found beside stella.py.",
-        "Fix: Windows Terminal launcher relaunched itself in a loop, so the "
-        "window flashed open and closed immediately.",
-    ],
-    "1.1.0": [
-        "Read tracking — opening an article marks it read; press r to toggle.",
-        "Read articles show dimmed in the list.",
-        "Tags — press g to tag any article (pick existing or type a new one).",
-        "Press G to filter the list by tag; B (bookmarks) has a tag filter too.",
-        "Updates now apply in place and drop you back where you were.",
-    ],
-}
 UPDATE_CHECK_INTERVAL_SEC = 10 * 60
 UPDATE_RETRY_INTERVAL_SEC = 60
-
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-# All data (CSVs, seen, state, bookmarks) lives beside stella.py. Anchor every
-# data path here, never to the CWD — a launch from any other directory must
-# still find the posts_*.csv shards instead of showing every site as "no data".
-DATA_DIR = SCRIPT_DIR
 
 from scraper import SITES, scrape_site, enrich_with_text, save_csv, find_start_page, fetch_article_text
 
 IS_WINDOWS = os.name == "nt"
-# Set True once ANSI/VT processing is confirmed on (always on non-Windows, and
-# on Windows 10+ after _enable_win_ansi succeeds). Gates the ANSI screen clear.
-_VT_ENABLED = not IS_WINDOWS
-# Dancer plays once per run (on the first site selector), not every return to it.
-_dance_shown = False
 
 if IS_WINDOWS:
     import msvcrt
@@ -214,30 +152,14 @@ def term_size():
 
 
 def clear_screen():
-    # Full clear every frame (home + erase screen). ANSI is used wherever VT is
-    # on — including Windows — because os.system("cls") spawns a process each
-    # keypress and visibly flickers. A plain ANSI clear is instant and lets the
-    # terminal coalesce clear+repaint, and unlike the in-place paint we tried it
-    # keeps normal scrollback (mouse-wheel works) and can't stack on wrap.
-    # Pre-VT consoles (no _VT_ENABLED) fall back to cls.
-    if _VT_ENABLED:
+    if IS_WINDOWS:
+        os.system("cls")
+    else:
         print("\033[2J\033[H", end="", flush=True)
-    else:
-        os.system("cls")
-
-
-def hard_clear():
-    """One-shot full wipe incl. scrollback — kills any leftover frame behind us.
-    Use once at startup, never per-frame (3J every frame flickers in wt)."""
-    if _VT_ENABLED:
-        print("\033[3J\033[2J\033[H", end="", flush=True)
-    else:
-        os.system("cls")
 
 
 def _enable_win_ansi():
     """Enable ANSI escape codes on Windows 10+."""
-    global _VT_ENABLED
     if not IS_WINDOWS:
         return
     try:
@@ -248,168 +170,75 @@ def _enable_win_ansi():
         mode = ctypes.c_ulong()
         kernel32.GetConsoleMode(handle, ctypes.byref(mode))
         kernel32.SetConsoleMode(handle, mode.value | 0x0004)
-        _VT_ENABLED = True
     except Exception:
         pass
 
 
-_MOUSE_ON = False
-_VT_INPUT = not IS_WINDOWS  # Windows: set once VT input (incl. mouse) is enabled
-
-
-def _decode_seq(ch: str, read1):
-    """Decode one keypress from a char + a read1() for the rest of a sequence.
-    Returns a key name, the raw char, or None for a mouse event to ignore
-    (clicks/moves/releases). Wheel up/down map to 'up'/'down'."""
-    if ch == "\x1b":
-        ch2 = read1()
-        if ch2 == "[":
-            ch3 = read1()
-            if ch3 == "A":
-                return "up"
-            if ch3 == "B":
-                return "down"
-            if ch3 == "C":
-                return "right"
-            if ch3 == "D":
-                return "left"
-            if ch3 == "<":  # SGR mouse: ESC [ < b ; x ; y (M|m)
-                seq = ""
-                while True:
-                    c = read1()
-                    if c == "" or c in ("M", "m"):
-                        break
-                    seq += c
-                try:
-                    btn = int(seq.split(";")[0])
-                except (ValueError, IndexError):
-                    return None
-                if btn == 64:        # wheel up
-                    return "up"
-                if btn == 65:        # wheel down
-                    return "down"
-                return None          # any other mouse event: ignore
-            return "esc"
-        return "esc"
-    if ch in ("\r", "\n"):
-        return "enter"
-    if ch in ("\x7f", "\x08"):
-        return "backspace"
-    if ch in ("\x03", "\x04"):
-        return "quit"
-    return ch
-
-
 def read_key() -> str:
-    """Read a keypress (arrows, wheel-as-up/down, chars). Ignores other mouse."""
-    while True:
-        k = _read_key_windows() if IS_WINDOWS else _read_key_unix()
-        if k is not None:
-            return k
+    """Read a single keypress, handling arrow keys and regular chars."""
+    if IS_WINDOWS:
+        return _read_key_windows()
+    return _read_key_unix()
 
 
-def _read_key_windows():
-    """Windows key reader. Uses VT-sequence decoding when VT input is on (so the
-    mouse wheel works); otherwise the classic msvcrt special-key codes."""
-    if _VT_INPUT:
-        ch = msvcrt.getwch()
-        return _decode_seq(ch, msvcrt.getwch)
+def _read_key_windows() -> str:
+    """Windows key reader using msvcrt."""
     ch = msvcrt.getwch()
     if ch in ("\x00", "\xe0"):  # special key prefix
         ch2 = msvcrt.getwch()
-        return {"H": "up", "P": "down", "M": "right", "K": "left"}.get(ch2, "esc")
-    if ch == "\r":
+        if ch2 == "H":
+            return "up"
+        elif ch2 == "P":
+            return "down"
+        elif ch2 == "M":
+            return "right"
+        elif ch2 == "K":
+            return "left"
+        return "esc"
+    elif ch == "\r":
         return "enter"
-    if ch == "\x08":
+    elif ch == "\x08":  # Backspace
         return "backspace"
-    if ch in ("\x03", "\x04"):
+    elif ch == "\x03":  # Ctrl-C
         return "quit"
-    if ch == "\x1b":
+    elif ch == "\x04":  # Ctrl-D
+        return "quit"
+    elif ch == "\x1b":
         return "esc"
     return ch
 
 
-def _read_key_unix():
-    """Unix key reader using termios; decodes arrows and the mouse wheel."""
+def _read_key_unix() -> str:
+    """Unix key reader using termios."""
     fd = sys.stdin.fileno()
     old = termios.tcgetattr(fd)
     try:
         tty.setraw(fd)
-        return _decode_seq(sys.stdin.read(1), lambda: sys.stdin.read(1))
+        ch = sys.stdin.read(1)
+        if ch == "\x1b":
+            ch2 = sys.stdin.read(1)
+            if ch2 == "[":
+                ch3 = sys.stdin.read(1)
+                if ch3 == "A":
+                    return "up"
+                elif ch3 == "B":
+                    return "down"
+                elif ch3 == "C":
+                    return "right"
+                elif ch3 == "D":
+                    return "left"
+            return "esc"
+        elif ch == "\r" or ch == "\n":
+            return "enter"
+        elif ch == "\x7f" or ch == "\x08":
+            return "backspace"
+        elif ch == "\x03":
+            return "quit"
+        elif ch == "\x04":
+            return "quit"
+        return ch
     finally:
         termios.tcsetattr(fd, termios.TCSADRAIN, old)
-
-
-def enable_mouse():
-    """Ask the terminal to report wheel events to us (so the wheel scrolls the
-    list). On Windows, switch the console to VT input so those reports arrive."""
-    global _MOUSE_ON, _VT_INPUT
-    if IS_WINDOWS:
-        try:
-            import ctypes
-            k = ctypes.windll.kernel32
-            hin = k.GetStdHandle(-10)  # STD_INPUT_HANDLE
-            mode = ctypes.c_ulong()
-            k.GetConsoleMode(hin, ctypes.byref(mode))
-            # +EXTENDED_FLAGS(0x80) +MOUSE_INPUT(0x10) +VT_INPUT(0x200), -QUICK_EDIT(0x40)
-            new = (mode.value | 0x0080 | 0x0010 | 0x0200) & ~0x0040
-            if k.SetConsoleMode(hin, new):
-                _VT_INPUT = True
-        except Exception:
-            _VT_INPUT = False
-    if _VT_ENABLED or not IS_WINDOWS:
-        sys.stdout.write("\033[?1000h\033[?1006h")
-        sys.stdout.flush()
-        _MOUSE_ON = True
-
-
-def disable_mouse():
-    """Stop reporting wheel events — restore native terminal wheel scrolling."""
-    global _MOUSE_ON
-    if _MOUSE_ON:
-        sys.stdout.write("\033[?1000l\033[?1006l")
-        sys.stdout.flush()
-        _MOUSE_ON = False
-
-
-_FULLSCREEN = False
-
-
-def enter_fullscreen():
-    """Switch to the alternate screen + capture the wheel. The alt screen has no
-    scrollback, so list views can't drift out of sync and the page always
-    follows the cursor; the wheel reports come to us so it navigates the list."""
-    global _FULLSCREEN
-    if not _VT_ENABLED:
-        return
-    sys.stdout.write("\033[?1049h\033[2J\033[H")  # alt screen, cleared
-    sys.stdout.flush()
-    _FULLSCREEN = True
-    enable_mouse()
-
-
-def exit_fullscreen():
-    """Leave the alternate screen and stop capturing the wheel — back to the
-    normal scrolling buffer (so article text scrolls natively)."""
-    global _FULLSCREEN
-    disable_mouse()
-    if _FULLSCREEN:
-        sys.stdout.write("\033[?1049l")  # restore normal screen + its scrollback
-        sys.stdout.flush()
-        _FULLSCREEN = False
-
-
-def view_article(post: dict, highlight=None):
-    """Open an article in the normal screen (native wheel-scroll for long text),
-    then return to the full-screen list view."""
-    was_fs = _FULLSCREEN
-    if was_fs:
-        exit_fullscreen()
-    try:
-        show_post_detail(post, highlight)
-    finally:
-        if was_fs:
-            enter_fullscreen()
 
 
 def input_line(prompt: str) -> str:
@@ -533,8 +362,7 @@ def load_csv(path: str) -> list[dict]:
 
 
 def find_latest_csv() -> str | None:
-    csvs = [os.path.join(DATA_DIR, f) for f in os.listdir(DATA_DIR)
-            if f.startswith("posts_") and f.endswith(".csv")]
+    csvs = [f for f in os.listdir(".") if f.startswith("posts_") and f.endswith(".csv")]
     if not csvs:
         return None
     return max(csvs, key=lambda f: os.path.getmtime(f))
@@ -564,7 +392,7 @@ def _text_is_missing(text: str) -> bool:
 
 def csv_path_for_site(slug: str) -> str:
     """Canonical CSV path for a site: posts_{slug}.csv"""
-    return os.path.join(DATA_DIR, f"posts_{slug}.csv")
+    return f"posts_{slug}.csv"
 
 
 def find_csv_for_site(slug: str) -> str | None:
@@ -574,8 +402,7 @@ def find_csv_for_site(slug: str) -> str | None:
         return canonical
     # Fallback: find latest dated file and rename it to canonical
     prefix = f"posts_{slug}_"
-    matches = [os.path.join(DATA_DIR, f) for f in os.listdir(DATA_DIR)
-               if f.startswith(prefix) and f.endswith(".csv")]
+    matches = [f for f in os.listdir(".") if f.startswith(prefix) and f.endswith(".csv")]
     if not matches:
         return None
     def extract_date(fname):
@@ -606,38 +433,15 @@ def scraped_to_csv_row(post: dict) -> dict:
     }
 
 
-def _norm_url(url: str) -> str:
-    """Normalize a URL for dedup: lowercased, no trailing slash, '/en/' folded
-    so rrn .../x and .../en/x collapse. Empty stays empty."""
-    u = (url or "").strip().rstrip("/").lower()
-    return re.sub(r"^(https?://[^/]+)/en/", r"\1/", u) if u else ""
-
-
-def _title_date_key(post: dict) -> tuple:
-    return (post.get("date", ""), (post.get("title", "") or "").strip().lower())
-
-
 def merge_new_posts(existing: list[dict], new_posts: list[dict]) -> list[dict]:
-    """Return only genuinely new posts. A new post is dropped if it matches an
-    existing one — or an earlier new one — by normalized URL or title+date.
-    This is what stops re-scrapes adding a duplicate under a URL variant."""
-    seen_urls, seen_td = set(), set()
-    for p in existing:
-        k = _norm_url(p.get("url", ""))
-        if k:
-            seen_urls.add(k)
-        seen_td.add(_title_date_key(p))
-    out = []
-    for p in new_posts:
-        k = _norm_url(p.get("url", ""))
-        td = _title_date_key(p)
-        if (k and k in seen_urls) or (td[1] and td in seen_td):
-            continue
-        if k:
-            seen_urls.add(k)
-        seen_td.add(td)
-        out.append(p)
-    return out
+    """Return only genuinely new posts (not already in existing), deduplicated."""
+    has_url = any(p.get("url") for p in existing)
+    if has_url:
+        seen = {p.get("url") for p in existing if p.get("url")}
+        return [p for p in new_posts if p.get("url") and p["url"] not in seen]
+    else:
+        seen = {(p.get("date", ""), p.get("title", "")) for p in existing}
+        return [p for p in new_posts if (p.get("date", ""), p.get("title", "")) not in seen]
 
 
 def save_merged_csv(posts: list[dict], csv_path: str):
@@ -862,8 +666,7 @@ def _highlight_pattern(highlight):
 
 
 def print_post_line(i: int, post: dict, highlight=None,
-                    bookmarked: bool = False, selected: bool = False,
-                    read: bool = False):
+                    bookmarked: bool = False, selected: bool = False):
     bm = c(" ★", "bookmark") if bookmarked else "  "
     idx_str = c(f"{i:>4}.", "idx")
     date_str = c(f"[{post.get('date', '')}]", "date")
@@ -874,14 +677,12 @@ def print_post_line(i: int, post: dict, highlight=None,
         parts = pattern.split(title)
         matches = pattern.findall(title)
         title_str = ""
-        base_style = ("dim",) if read else ("title", "bold")
         for j, part in enumerate(parts):
-            title_str += c(part, *base_style)
+            title_str += c(part, "title", "bold")
             if j < len(matches):
                 title_str += c(matches[j], "highlight", "bold")
     else:
-        base_style = ("dim",) if read else ("title", "bold")
-        title_str = c(title, *base_style)
+        title_str = c(title, "title", "bold")
 
     if selected:
         # Full-line reverse video with search term highlight
@@ -1141,25 +942,19 @@ def show_post_detail(post: dict, highlight=None):
         print(c("  (no article text available)", "dim"))
     print(c("─" * width, "bar"))
 
-    # Tags on this article
-    _tags = get_tags(load_state(), post.get("url", ""))
-    if _tags:
-        print(c("  Tags   ", "dim") + c(" · ".join(_tags), "accent", "bold"))
-        print(c("─" * width, "bar"))
-
     # Bookmark status and controls
-    url = post.get("url", "")
     bookmarks = load_bookmarks()
-    is_bm = url in {b.get("url") for b in bookmarks}
+    is_bm = post.get("url") in {b.get("url") for b in bookmarks}
     has_text = not _text_is_missing(post.get("text", ""))
-    r_hint = "[r] mark unread" if is_read(load_state(), url) else "[r] mark read"
-    wc_hint = "  [w] word cloud" if has_text else ""
-    search_hint = "  [/] search" if has_text else ""
     if is_bm:
         print(c("  ★ Bookmarked", "bookmark"), end="")
-        print(c(f"  |  [b] remove bookmark  {r_hint}  [g] tag{wc_hint}{search_hint}  [backspace] back", "dim"))
+        wc_hint = "  [w] word cloud" if has_text else ""
+        search_hint = "  [/] search" if has_text else ""
+        print(c(f"  |  [b] remove bookmark{wc_hint}{search_hint}  [backspace] back", "dim"))
     else:
-        print(c(f"  [b] bookmark  {r_hint}  [g] tag{wc_hint}{search_hint}  [backspace] back", "dim"))
+        wc_hint = "  [w] word cloud" if has_text else ""
+        search_hint = "  [/] search" if has_text else ""
+        print(c(f"  [b] bookmark{wc_hint}{search_hint}  [backspace] back", "dim"))
 
     while True:
         key = read_key()
@@ -1175,24 +970,18 @@ def show_post_detail(post: dict, highlight=None):
             return show_post_detail(post, highlight)
         elif key == "b":
             if is_bm:
-                remove_bookmark(url)
+                remove_bookmark(post.get("url", ""))
+                is_bm = False
             else:
                 add_bookmark(post)
-            return show_post_detail(post, highlight)  # re-render with updated bookmark
-        elif key == "r":
-            if url:
-                _state = load_state()
-                new_value = not is_read(_state, url)
-                set_read(_state, url, new_value)
-                save_state(_state)
-                print(c("  ✓ marked " + ("read" if new_value else "unread"),
-                        "accent", "bold"), end="\r", flush=True)
-                time.sleep(0.6)
-            return show_post_detail(post, highlight)  # re-render with updated read state
-        elif key == "g":
-            _state = load_state()
-            tag_picker(_state, post.get("url", ""))
-            return show_post_detail(post, highlight)  # re-render with updated tags
+                is_bm = True
+            # Re-render the bookmark line
+            print(f"\033[A\033[2K", end="")  # move up, clear line
+            if is_bm:
+                print(c("  ★ Bookmarked", "bookmark"), end="")
+                print(c("  |  [b] remove bookmark  [backspace] back", "dim"))
+            else:
+                print(c("  [b] bookmark  [backspace] back", "dim"))
         elif key in ("backspace", "q", "esc", "quit"):
             break
 
@@ -1219,38 +1008,19 @@ def find_shards(slug: str) -> list[tuple[int, str]]:
     """Return (year, path) tuples for all year shards of a site, sorted oldest→newest."""
     pattern = re.compile(rf"^posts_{re.escape(slug)}_(\d{{4}})\.csv$")
     results = []
-    for f in os.listdir(DATA_DIR):
+    for f in os.listdir("."):
         m = pattern.match(f)
         if m:
-            results.append((int(m.group(1)), os.path.join(DATA_DIR, f)))
+            results.append((int(m.group(1)), f))
     return sorted(results)
 
 
 def shard_path(slug: str, year: int) -> str:
-    return os.path.join(DATA_DIR, f"posts_{slug}_{year}.csv")
-
-
-def _dedup_posts(posts: list[dict]) -> list[dict]:
-    """Drop duplicate articles, keeping the first seen. A post is a dup if its
-    URL matches (trailing slash / leading 'en/' ignored, so rrn .../x and
-    .../en/x collapse) or, lacking a URL, its (date, title) matches."""
-    seen_urls, seen_td, out = set(), set(), []
-    for p in posts:
-        key = _norm_url(p.get("url", ""))
-        td = _title_date_key(p)
-        # Dup if the (slash/'en'-normalized) URL repeats, or the same title ran
-        # on the same date (catches re-scrapes that landed a new URL variant).
-        if (key and key in seen_urls) or (td[1] and td in seen_td):
-            continue
-        if key:
-            seen_urls.add(key)
-        seen_td.add(td)
-        out.append(p)
-    return out
+    return f"posts_{slug}_{year}.csv"
 
 
 def load_shards(slug: str, years: list[int] | None = None) -> list[dict]:
-    """Load year shards for slug (newest-first, deduped). years=None loads all."""
+    """Load year shards for slug (newest-first). years=None loads all shards."""
     all_shards = find_shards(slug)
     if years is not None:
         shards = [(y, p) for y, p in all_shards if y in years]
@@ -1263,7 +1033,7 @@ def load_shards(slug: str, years: list[int] | None = None) -> list[dict]:
                 posts.extend(load_csv(path))
             except Exception:
                 pass
-    return _dedup_posts(posts)
+    return posts
 
 
 def count_shards(slug: str) -> int:
@@ -1340,14 +1110,14 @@ def ensure_article_text(post: dict) -> bool:
 
 def migrate_to_shards(slug: str):
     """One-time: split legacy posts_{slug}.csv into per-year shards."""
-    legacy = os.path.join(DATA_DIR, f"posts_{slug}.csv")
+    legacy = f"posts_{slug}.csv"
     if not os.path.exists(legacy) or find_shards(slug):
         return
     try:
         posts = load_csv(legacy)
         if posts:
             save_sharded(posts, slug)
-        os.rename(legacy, legacy + ".bak")
+        os.rename(legacy, f"posts_{slug}.csv.bak")
     except Exception as e:
         print(c(f"  Warning: shard migration failed for {slug}: {e}", "warn"))
 
@@ -1371,11 +1141,10 @@ class FilterSpec:
     date_from: datetime | None = None
     date_to: datetime | None = None
     site_slugs: list[str] = field(default_factory=list)
-    tags: list[str] = field(default_factory=list)   # match ANY of these tags
 
     def is_empty(self) -> bool:
         return not (self.title_words or self.text_words
-                    or self.date_from or self.date_to or self.tags)
+                    or self.date_from or self.date_to)
 
     def summary(self) -> str:
         parts = []
@@ -1383,8 +1152,6 @@ class FilterSpec:
             parts.append(f"title {self.title_mode.upper()}=[{', '.join(self.title_words)}]")
         if self.text_words:
             parts.append(f"text {self.text_mode.upper()}=[{', '.join(self.text_words)}]")
-        if self.tags:
-            parts.append(f"tags=[{', '.join(self.tags)}]")
         if self.date_from or self.date_to:
             a = self.date_from.strftime("%Y-%m-%d") if self.date_from else "any"
             b = self.date_to.strftime("%Y-%m-%d") if self.date_to else "any"
@@ -1394,32 +1161,6 @@ class FilterSpec:
         elif len(self.site_slugs) > 1:
             parts.append(f"{len(self.site_slugs)} sites")
         return " · ".join(parts) if parts else "(no constraints)"
-
-    def to_dict(self) -> dict:
-        return {
-            "title_words": list(self.title_words),
-            "title_mode": self.title_mode,
-            "text_words": list(self.text_words),
-            "text_mode": self.text_mode,
-            "date_from": self.date_from.isoformat() if self.date_from else None,
-            "date_to": self.date_to.isoformat() if self.date_to else None,
-            "site_slugs": list(self.site_slugs),
-            "tags": list(self.tags),
-        }
-
-    @classmethod
-    def from_dict(cls, d: dict) -> "FilterSpec":
-        df, dt = d.get("date_from"), d.get("date_to")
-        return cls(
-            title_words=list(d.get("title_words") or []),
-            title_mode=d.get("title_mode") or "any",
-            text_words=list(d.get("text_words") or []),
-            text_mode=d.get("text_mode") or "any",
-            date_from=datetime.fromisoformat(df) if df else None,
-            date_to=datetime.fromisoformat(dt) if dt else None,
-            site_slugs=list(d.get("site_slugs") or []),
-            tags=list(d.get("tags") or []),
-        )
 
 
 def _match_words(haystack: str, words: list[str], mode: str) -> bool:
@@ -1433,7 +1174,7 @@ def _match_words(haystack: str, words: list[str], mode: str) -> bool:
     return any(hit(w) for w in words)
 
 
-def apply_filter(post: dict, spec: FilterSpec, state: dict | None = None) -> bool:
+def apply_filter(post: dict, spec: FilterSpec) -> bool:
     if not _match_words(post.get("title") or "", spec.title_words, spec.title_mode):
         return False
     if not _match_words(post.get("text") or "", spec.text_words, spec.text_mode):
@@ -1446,139 +1187,34 @@ def apply_filter(post: dict, spec: FilterSpec, state: dict | None = None) -> boo
             return False
         if spec.date_to is not None and d > spec.date_to:
             return False
-    if spec.tags:
-        if state is None:
-            state = load_state()
-        post_tags = get_tags(state, post.get("url", ""))
-        if not any(t in post_tags for t in spec.tags):
-            return False
     return True
 
 
-def multiselect_tags(state: dict, preselected: list) -> list:
-    """Checkbox multi-select over all known tags. Returns the chosen list."""
-    tags = all_tags(state)
-    if not tags:
-        clear_screen()
-        print(c("\n  No tags exist yet. Press any key...", "dim"))
-        read_key()
-        return list(preselected)
-    chosen = set(preselected)
-    cursor = 0
-    while True:
-        if cursor >= len(tags):
-            cursor = len(tags) - 1
-        clear_screen()
-        print_header("Filter by tags")
-        print()
-        for i, t in enumerate(tags):
-            box = "[x]" if t in chosen else "[ ]"
-            if i == cursor:
-                print(f"  {c('▸', 'accent')} {c(box, 'accent', 'bold')} {c(t, 'title', 'bold')}")
-            else:
-                style = ("accent",) if t in chosen else ("dim",)
-                print(f"    {c(box, *style)} {c(t, *style)}")
-        print()
-        print(c("  Selected: ", "dim") + (c(" · ".join(sorted(chosen)), "accent")
-                                          if chosen else c("(none — matches all)", "dim")))
-        print()
-        print(c("  ↑↓ move   Space/Enter toggle   [backspace] done", "dim"))
-        key = read_key()
-        if key in ("backspace", "esc", "q", "quit"):
-            return sorted(chosen)
-        elif key == "up":
-            cursor = (cursor - 1) % len(tags)
-        elif key == "down":
-            cursor = (cursor + 1) % len(tags)
-        elif key in (" ", "enter"):
-            t = tags[cursor]
-            if t in chosen:
-                chosen.discard(t)
-            else:
-                chosen.add(t)
-
-
-def recent_filter_picker(history: list) -> FilterSpec | None:
-    """Pick a previously-applied filter to re-apply. Returns it, or None."""
-    if not history:
-        return None
-    cursor = 0
-    while True:
-        clear_screen()
-        print()
-        print(c("  Recent filters", "title", "bold"))
-        print(c("    Pick one to apply it again.", "dim"))
-        print()
-        for i, spec in enumerate(history):
-            sel = (i == cursor)
-            arrow = c("  ▸ ", "accent") if sel else "    "
-            print(arrow + c(spec.summary(), "accent" if sel else "info",
-                            "bold" if sel else "info"))
-        print()
-        print(c("  ↑↓ navigate · Enter apply · Esc/backspace back", "dim"))
-
-        key = read_key()
-        if key in ("esc", "quit", "backspace"):
-            return None
-        if key == "up":
-            cursor = (cursor - 1) % len(history)
-        elif key == "down":
-            cursor = (cursor + 1) % len(history)
-        elif key == "enter":
-            return history[cursor]
-
-
-def filter_form(default_site_slug: str | None, bookmark_mode: bool = False) -> FilterSpec | None:
+def filter_form(default_site_slug: str | None) -> FilterSpec | None:
     """Modal form for compound filtering. Returns FilterSpec or None on cancel."""
     spec = FilterSpec()
-    if bookmark_mode:
-        spec.site_slugs = []                       # sites irrelevant for bookmarks
-    elif default_site_slug is not None:
+    if default_site_slug is not None:
         spec.site_slugs = [default_site_slug]
     else:
         spec.site_slugs = [site_slug(s) for s in SITES]
-    state = load_state()
-    history = get_filter_history(state)
-    known_slugs = {site_slug(s) for s in SITES}
-
-    def scope_for_mode(s: FilterSpec) -> FilterSpec:
-        """Fit a (possibly cross-context) spec's site scope to this form."""
-        s.site_slugs = [sl for sl in s.site_slugs if sl in known_slugs]
-        if bookmark_mode:
-            s.site_slugs = []
-        elif not s.site_slugs:
-            s.site_slugs = ([default_site_slug] if default_site_slug
-                            else [site_slug(x) for x in SITES])
-        return s
 
     site_options = [(site_slug(s), s["name"]) for s in SITES]
 
     # Build the row layout. Each row is (kind, key, label).
-    # kinds: title_words, title_mode, text_words, text_mode, tags,
+    # kinds: title_words, title_mode, text_words, text_mode,
     #        date_from, date_to, site (with index in payload), action.
     def build_rows():
-        rows = []
-        if history:
-            rows.append(("recent", None, f"Recent filters ({len(history)}) ▸"))
-            rows.append(("header", None, "New filter"))
-        rows += [
+        rows = [
             ("title_words", None, "Title contains"),
             ("title_mode",  None, "Title match"),
-        ]
-        if not bookmark_mode:                      # bookmarks have no article text
-            rows += [
-                ("text_words",  None, "Text contains"),
-                ("text_mode",   None, "Text match"),
-            ]
-        rows += [
-            ("tags",        None, "Tags"),
+            ("text_words",  None, "Text contains"),
+            ("text_mode",   None, "Text match"),
             ("date_from",   None, "Date from"),
             ("date_to",     None, "Date to"),
+            ("header",      None, "Sites"),
         ]
-        if not bookmark_mode:                      # bookmarks aren't scoped by site
-            rows.append(("header", None, "Sites"))
-            for i, (slug, name) in enumerate(site_options):
-                rows.append(("site", i, name))
+        for i, (slug, name) in enumerate(site_options):
+            rows.append(("site", i, name))
         rows.extend([
             ("action", "apply",  "Apply"),
             ("action", "reset",  "Reset"),
@@ -1609,10 +1245,7 @@ def filter_form(default_site_slug: str | None, bookmark_mode: bool = False) -> F
             sel = (idx == cursor)
             arrow = c("  ▸ ", "accent") if sel else "    "
 
-            if kind == "recent":
-                print(arrow + c(label, "accent" if sel else "info",
-                                "bold" if sel else "info"))
-            elif kind == "title_words":
+            if kind == "title_words":
                 val = ", ".join(spec.title_words) if spec.title_words else "(empty)"
                 print(arrow + c(f"{label}: ", "title", "bold" if sel else "dim") +
                       c(val, "accent" if sel else "info"))
@@ -1626,10 +1259,6 @@ def filter_form(default_site_slug: str | None, bookmark_mode: bool = False) -> F
             elif kind == "text_mode":
                 print(arrow + c(f"{label}: ", "title", "bold" if sel else "dim") +
                       c(spec.text_mode.upper(), "accent" if sel else "info"))
-            elif kind == "tags":
-                val = " · ".join(spec.tags) if spec.tags else "(any)"
-                print(arrow + c(f"{label}: ", "title", "bold" if sel else "dim") +
-                      c(val, "accent" if sel else "info"))
             elif kind == "date_from":
                 val = spec.date_from.strftime("%Y-%m-%d") if spec.date_from else "any"
                 print(arrow + c(f"{label}: ", "title", "bold" if sel else "dim") +
@@ -1639,9 +1268,9 @@ def filter_form(default_site_slug: str | None, bookmark_mode: bool = False) -> F
                 print(arrow + c(f"{label}: ", "title", "bold" if sel else "dim") +
                       c(val, "accent" if sel else "info"))
             elif kind == "header":
-                hint = "   (Space toggle, A=all, N=none)" if label == "Sites" else ""
                 print()
-                print("    " + c(label, "title", "bold") + c(hint, "dim"))
+                print("    " + c(label, "title", "bold") +
+                      c("   (Space toggle, A=all, N=none)", "dim"))
             elif kind == "site":
                 slug, name = site_options[payload]
                 checked = slug in spec.site_slugs
@@ -1661,11 +1290,11 @@ def filter_form(default_site_slug: str | None, bookmark_mode: bool = False) -> F
         if warning:
             print(c(f"  {warning}", "warn"))
             warning = ""
-        print(c("  ↑↓ navigate · Enter activate · Space toggle · Esc/backspace cancel", "dim"))
+        print(c("  ↑↓ navigate · Enter activate · Space toggle · g apply · Esc cancel", "dim"))
 
         key = read_key()
 
-        if key in ("esc", "quit", "backspace"):
+        if key in ("esc", "quit"):
             return None
         if key == "up":
             i = cursor - 1
@@ -1684,19 +1313,17 @@ def filter_form(default_site_slug: str | None, bookmark_mode: bool = False) -> F
 
         kind, payload, label = rows[cursor]
 
-        if kind == "recent":
-            if key == "enter":
-                chosen = recent_filter_picker(history)
-                if chosen is not None:
-                    # Record the original identity FIRST so re-applying bumps the
-                    # existing entry (dedup matches the stored dict); scoping it
-                    # afterward would change site_slugs and create a duplicate.
-                    record_filter(state, chosen)
-                    return scope_for_mode(chosen)
-        elif kind == "title_words":
+        # Global apply hotkey
+        if key == "g":
+            key = "enter"
+            kind, payload = "action", "apply"
+
+        if kind == "title_words":
             if key == "enter":
                 term = input_line(c("  Title — comma-separate phrases (e.g. merkel, tax reform): ", "accent"))
                 spec.title_words = [w.strip().lower() for w in term.split(",") if w.strip()] if term else []
+            elif key == "backspace":
+                spec.title_words = []
         elif kind == "title_mode":
             if key in ("enter", " ", "space"):
                 spec.title_mode = "all" if spec.title_mode == "any" else "any"
@@ -1704,23 +1331,26 @@ def filter_form(default_site_slug: str | None, bookmark_mode: bool = False) -> F
             if key == "enter":
                 term = input_line(c("  Text — comma-separate phrases (e.g. wirtschaft, steuer reform): ", "accent"))
                 spec.text_words = [w.strip().lower() for w in term.split(",") if w.strip()] if term else []
+            elif key == "backspace":
+                spec.text_words = []
         elif kind == "text_mode":
             if key in ("enter", " ", "space"):
                 spec.text_mode = "all" if spec.text_mode == "any" else "any"
-        elif kind == "tags":
-            if key == "enter":
-                spec.tags = multiselect_tags(state, spec.tags)
         elif kind == "date_from":
             if key == "enter":
                 picked = date_picker("Filter — date from:", spec.date_from or datetime.now())
                 if picked is not None:
                     spec.date_from = picked
+            elif key == "backspace":
+                spec.date_from = None
         elif kind == "date_to":
             if key == "enter":
                 default = spec.date_to or datetime.now()
                 picked = date_picker("Filter — date to:", default)
                 if picked is not None:
                     spec.date_to = picked.replace(hour=23, minute=59, second=59)
+            elif key == "backspace":
+                spec.date_to = None
         elif kind == "site":
             slug = site_options[payload][0]
             if key in ("enter", " ", "space"):
@@ -1735,16 +1365,13 @@ def filter_form(default_site_slug: str | None, bookmark_mode: bool = False) -> F
         elif kind == "action":
             if key == "enter":
                 if payload == "apply":
-                    if not bookmark_mode and not spec.site_slugs:
+                    if not spec.site_slugs:
                         warning = "Pick at least one site."
                         continue
-                    record_filter(state, spec)
                     return spec
                 if payload == "reset":
                     spec = FilterSpec()
-                    if bookmark_mode:
-                        spec.site_slugs = []
-                    elif default_site_slug is not None:
+                    if default_site_slug is not None:
                         spec.site_slugs = [default_site_slug]
                     else:
                         spec.site_slugs = [site_slug(s) for s in SITES]
@@ -1761,12 +1388,11 @@ def run_filter(spec: FilterSpec, current_slug: str | None,
     each selected site's shards and annotate posts with `_site` + a prefixed
     title (the same convention global_search uses for cross-site display).
     """
-    _state = load_state()
     selected = set(spec.site_slugs)
     can_reuse = (current_slug is not None and current_posts is not None
                  and selected == {current_slug})
     if can_reuse:
-        return [p for p in current_posts if apply_filter(p, spec, _state)]
+        return [p for p in current_posts if apply_filter(p, spec)]
 
     results = []
     for s in SITES:
@@ -1774,7 +1400,7 @@ def run_filter(spec: FilterSpec, current_slug: str | None,
         if slug not in selected:
             continue
         for p in load_shards(slug):
-            if not apply_filter(p, spec, _state):
+            if not apply_filter(p, spec):
                 continue
             p_copy = dict(p)
             if len(selected) > 1:
@@ -1784,75 +1410,9 @@ def run_filter(spec: FilterSpec, current_slug: str | None,
     return results
 
 
-def tag_picker(state: dict, url: str):
-    """Cursor-driven multi-select of tags for `url`, plus add-new. Mutates+saves state."""
-    if not url:
-        return
-    cursor = 0
-    while True:
-        existing = all_tags(state)
-        current = set(get_tags(state, url))
-        if cursor >= len(existing):
-            cursor = max(0, len(existing) - 1)
-        clear_screen()
-        print_header("Tags")
-        print()
-        if existing:
-            for idx, t in enumerate(existing):
-                checked = t in current
-                box = "[x]" if checked else "[ ]"
-                if idx == cursor:
-                    print(f"  {c('▸', 'accent')} {c(box, 'accent', 'bold')} {c(t, 'title', 'bold')}")
-                else:
-                    style = ("accent",) if checked else ("dim",)
-                    print(f"    {c(box, *style)} {c(t, *style)}")
-        else:
-            print(c("  No tags yet — press [n] to add one.", "dim"))
-        print()
-        print(c("  Current: ", "dim") + (c(" · ".join(sorted(current)), "accent")
-                                         if current else c("(none)", "dim")))
-        print()
-        print(c("  ↑↓ move   Space/Enter toggle   [n] new tag   [backspace] done", "dim"))
-
-        key = read_key()
-        if key in ("backspace", "esc", "q", "quit"):
-            break
-        elif key == "up":
-            if existing:
-                cursor = (cursor - 1) % len(existing)
-        elif key == "down":
-            if existing:
-                cursor = (cursor + 1) % len(existing)
-        elif key == "n":
-            print()
-            new = input_line(c("  New tag: ", "accent"))
-            if new:
-                tags = get_tags(state, url)
-                tags.append(new)
-                set_tags(state, url, tags)
-                save_state(state)
-                # land the cursor on the just-added tag (list is sorted)
-                added = normalize_tag(new)
-                refreshed = all_tags(state)
-                if added in refreshed:
-                    cursor = refreshed.index(added)
-        elif key in (" ", "enter"):
-            if existing and 0 <= cursor < len(existing):
-                t = existing[cursor]
-                tags = get_tags(state, url)
-                if t in tags:
-                    tags = [x for x in tags if x != t]
-                else:
-                    tags.append(t)
-                set_tags(state, url, tags)
-                save_state(state)
-
-
-
 def paginate_posts(posts: list[dict], highlight: str | None = None, all_posts: list[dict] | None = None,
                    db_total: int | None = None, site: dict | None = None,
-                   slug: str | None = None, all_loaded: bool = True,
-                   resume: dict | None = None):
+                   slug: str | None = None, all_loaded: bool = True):
     """Display posts with cursor navigation. ↑↓ moves selection, Enter opens article."""
     if all_posts is None:
         all_posts = posts
@@ -1862,35 +1422,17 @@ def paginate_posts(posts: list[dict], highlight: str | None = None, all_posts: l
     cursor = 0
     bookmarks = load_bookmarks()
     bm_urls = {b.get("url") for b in bookmarks}
-    state = load_state()
     has_text = any(p.get("text") for p in posts) if posts else False
 
     # Date filter state
-    filter_kind = None     # None | "month" | "day"  (legacy "tag" only from old resume data)
+    filter_kind = None     # None | "month" | "day"
     filter_value = None    # None | (year, month) | datetime
-
-    if resume:
-        fk = resume.get("filter_kind")
-        filter_kind, filter_value = _deserialize_filter(fk, resume.get("filter_value"))
-        cursor = resume.get("cursor", 0)
-        open_url = resume.get("open_url")
-        if open_url:
-            match = next((p for p in posts if p.get("url") == open_url), None)
-            if match is not None:
-                set_read(state, open_url, True)  # opening marks read (before detail)
-                save_state(state)
-                view_article(match)
-                state = load_state()  # pick up any in-detail toggle
 
     while True:
         # Derive displayed list from filter
         if filter_kind is None:
             display = posts
             filter_label = None
-        elif filter_kind == "tag":
-            display = [p for p in posts
-                       if filter_value in get_tags(state, p.get("url", ""))]
-            filter_label = f"tag: {filter_value}"
         else:
             display = []
             for p in posts:
@@ -1925,17 +1467,13 @@ def paginate_posts(posts: list[dict], highlight: str | None = None, all_posts: l
             right = c("[d] go to date  [m] jump to month", "dim")
         print(left + "    " + right)
 
-        with _update_lock:
-            _pending_v = _update_status["remote_version"] if _update_status["downloaded"] else None
-        banner_rows = 1 if _pending_v else 0
-
         chart_lines = []
         if show_chart:
             chart_height = max(5, (term_h * 2) // 5)
             chart_lines = render_chart(display, all_posts, chart_height, min(tw, 120))
-            page_size = max(3, term_h - len(chart_lines) - 4 - banner_rows)
+            page_size = max(3, term_h - len(chart_lines) - 4)
         else:
-            page_size = max(3, term_h - 4 - banner_rows)
+            page_size = max(3, term_h - 4)
 
         total_pages = max(1, (total + page_size - 1) // page_size) if total else 1
         page = cursor // page_size if total else 0
@@ -1951,8 +1489,7 @@ def paginate_posts(posts: list[dict], highlight: str | None = None, all_posts: l
                 post = display[i]
                 is_bm = post.get("url") in bm_urls
                 is_sel = (i == cursor)
-                print_post_line(i + 1, post, highlight, bookmarked=is_bm,
-                                selected=is_sel, read=is_read(state, post.get("url", "")))
+                print_post_line(i + 1, post, highlight, bookmarked=is_bm, selected=is_sel)
 
         if show_chart and chart_lines:
             print()
@@ -1962,21 +1499,13 @@ def paginate_posts(posts: list[dict], highlight: str | None = None, all_posts: l
         print()
         has_any_text = any(p.get("text") for p in display) if display else False
         cur_disp = (cursor + 1) if total else 0
-        if filter_kind == "tag":
-            filter_hint = f"  [{filter_value}]"
-        elif filter_kind:
-            filter_hint = f"  filter: {filter_kind}"
-        else:
-            filter_hint = ""
+        filter_hint = f"  filter: {filter_kind}" if filter_kind else ""
         update_hint = "  [u] update" if can_scrape else ""
-        r_hint = "[r] mark unread" if (total > 0 and is_read(state, display[cursor].get("url", ""))) else "[r] mark read"
         print(
             c(f" {cur_disp}/{total} ", "accent") +
             c(f" p.{page + 1}/{total_pages} ", "dim") +
-            c(f" ↑↓ move  [s] title  {r_hint}  [f] filter  [b] bm  [B] bms{filter_hint}{update_hint}  [?] help", "dim")
+            c(f" ↑↓ move  ←→ page  [s] title  [S] txt  [f] filter  [b] bookmark  [B] bookmarks{filter_hint}{update_hint}  [?] help", "dim")
         )
-        if _pending_v:
-            print(c(f"  ★ Stella v{_pending_v} ready — press A to update now", "accent", "bold"))
 
         key = read_key()
 
@@ -2004,31 +1533,9 @@ def paginate_posts(posts: list[dict], highlight: str | None = None, all_posts: l
             show_word_cloud(display, title=f"Word cloud — {len(display)} articles" +
                             (f" matching '{hl_label}'" if hl_label else ""))
         elif key == "enter" and total > 0:
-            post = display[cursor]
-            set_read(state, post.get("url", ""), True)  # opening marks read
-            save_state(state)
-            view_article(post, highlight)
-            state = load_state()  # pick up any in-detail read toggle
+            show_post_detail(display[cursor], highlight)
             bookmarks = load_bookmarks()
             bm_urls = {b.get("url") for b in bookmarks}
-        elif key == "r" and total > 0:
-            url = display[cursor].get("url", "")
-            if url:
-                set_read(state, url, not is_read(state, url))
-                save_state(state)
-        elif key == "A":
-            with _update_lock:
-                pend = _update_status["downloaded"]
-                pend_v = _update_status["remote_version"]
-            if pend and confirm_modal(f"Update to Stella v{pend_v} now?"):
-                resume = {
-                    "slug": slug,
-                    "cursor": cursor,
-                    "filter_kind": filter_kind,
-                    "filter_value": _serialize_filter(filter_kind, filter_value),
-                    "open_url": None,
-                }
-                apply_update_and_relaunch(state, resume)
         elif key == "b" and total > 0:
             post = display[cursor]
             if post.get("url") in bm_urls:
@@ -2149,46 +1656,27 @@ def show_bookmarks(posts: list[dict] | None = None):
         read_key()
         return
 
-    state = load_state()
-    spec = None  # FilterSpec when filtering
     _, term_h = term_size()
     page_size = max(5, term_h - 4)
     cursor = 0
+    total = len(bookmarks)
 
     while True:
-        if spec is None:
-            shown = bookmarks
-        else:
-            shown = [b for b in bookmarks if apply_filter(b, spec, state)]
-        total = len(shown)
-        if cursor >= total:
-            cursor = max(0, total - 1)
-
         clear_screen()
-        title = "★ Bookmarks"
-        if spec is not None:
-            title += f" — {spec.summary()}  ({total})"
-        else:
-            title += f" — {len(bookmarks)} saved"
-        print_header(title)
+        print_header(f"★ Bookmarks — {total} saved")
 
-        page = cursor // page_size if total else 0
+        page = cursor // page_size
         total_pages = max(1, (total + page_size - 1) // page_size)
         start = page * page_size
         end = min(start + page_size, total)
 
-        if total == 0:
-            print()
-            print(c("  No bookmarks match this filter.  [c] clear", "warn"))
-
         for i in range(start, end):
-            print_post_line(i + 1, shown[i], bookmarked=True, selected=(i == cursor),
-                            read=is_read(state, shown[i].get("url", "")))
+            print_post_line(i + 1, bookmarks[i], bookmarked=True, selected=(i == cursor))
 
         print()
         print(
-            c(f" {cursor + 1 if total else 0}/{total} ", "accent") +
-            c(" ↑↓ navigate  Enter view  [f] filter  [c] clear  [r] remove  [backspace] back", "dim")
+            c(f" {cursor + 1}/{total} ", "accent") +
+            c(" ↑↓ navigate  Enter view  [r] remove  [backspace] back", "dim")
         )
 
         key = read_key()
@@ -2200,37 +1688,27 @@ def show_bookmarks(posts: list[dict] | None = None):
         elif key == "up":
             if cursor > 0:
                 cursor -= 1
-        elif key == "f":
-            picked = filter_form(default_site_slug=None, bookmark_mode=True)
-            if picked is not None:
-                spec = picked
-                cursor = 0
-        elif key == "c":
-            spec = None
-            cursor = 0
-        elif key == "enter" and total > 0:
-            bm = shown[cursor]
+        elif key == "enter":
+            bm = bookmarks[cursor]
             full_post = post_by_url.get(bm.get("url"), bm)
-            set_read(state, bm.get("url", ""), True)  # opening marks read
-            save_state(state)
-            view_article(full_post)
-            state = load_state()  # pick up any in-detail read toggle
-        elif key == "r" and total > 0:
-            remove_bookmark(shown[cursor].get("url", ""))
+            show_post_detail(full_post)
+        elif key == "r":
+            remove_bookmark(bookmarks[cursor].get("url", ""))
             bookmarks = load_bookmarks()
-            if not bookmarks:
+            total = len(bookmarks)
+            if total == 0:
                 clear_screen()
                 print(c("\n  All bookmarks removed. Press any key...", "dim"))
                 read_key()
                 break
-            cursor = min(cursor, max(0, len(bookmarks) - 1))
+            cursor = min(cursor, total - 1)
 
 
 # ---------------------------------------------------------------------------
 # Read / unread tracking
 # ---------------------------------------------------------------------------
 
-SEEN_FILE = os.path.join(SCRIPT_DIR, "stella_seen.json")
+SEEN_FILE = "stella_seen.json"
 
 
 def load_seen() -> dict:
@@ -2279,197 +1757,6 @@ def count_unread(slug: str) -> int:
 
 
 # ---------------------------------------------------------------------------
-# Per-article state (read + tags) and app metadata
-#
-# stella_state.json keyed by article URL:
-#   { "__meta__": {"last_seen_version": "1.1.0", "resume": {...}},
-#     "https://...": {"read": true, "tags": ["politics"]} }
-# Keys starting with "__" are metadata, never treated as articles.
-# ---------------------------------------------------------------------------
-
-STATE_FILE = os.path.join(SCRIPT_DIR, "stella_state.json")
-_META_KEY = "__meta__"
-
-
-def load_state(path: str = STATE_FILE) -> dict:
-    if os.path.exists(path):
-        try:
-            with open(path, encoding="utf-8") as f:
-                data = json.load(f)
-                if isinstance(data, dict):
-                    return data
-        except Exception:
-            pass
-    return {}
-
-
-def save_state(state: dict, path: str = STATE_FILE):
-    try:
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(state, f, ensure_ascii=False, indent=2)
-    except OSError:
-        pass  # read-only install dir etc. — never crash the UI over state persistence
-
-
-def _row(state: dict, url: str) -> dict:
-    """Get or create the per-article row for url."""
-    row = state.get(url)
-    if not isinstance(row, dict):
-        row = {}
-        state[url] = row
-    return row
-
-
-def _prune(state: dict, url: str):
-    """Drop a row that carries no read flag and no tags, to keep the file small."""
-    row = state.get(url)
-    if isinstance(row, dict) and not row.get("read") and not row.get("tags"):
-        state.pop(url, None)
-
-
-def is_read(state: dict, url: str) -> bool:
-    row = state.get(url)
-    return bool(isinstance(row, dict) and row.get("read"))
-
-
-def set_read(state: dict, url: str, value: bool):
-    if not url:
-        return
-    _row(state, url)["read"] = bool(value)
-    _prune(state, url)
-
-
-def normalize_tag(tag: str) -> str:
-    return tag.strip().lower()
-
-
-def get_tags(state: dict, url: str) -> list:
-    row = state.get(url)
-    if isinstance(row, dict) and isinstance(row.get("tags"), list):
-        return list(row["tags"])
-    return []
-
-
-def set_tags(state: dict, url: str, tags: list):
-    if not url:
-        return
-    seen = []
-    for t in tags:
-        if not isinstance(t, str):
-            continue
-        n = normalize_tag(t)
-        if n and n not in seen:
-            seen.append(n)
-    row = _row(state, url)
-    if seen:
-        row["tags"] = seen
-    else:
-        row.pop("tags", None)
-    _prune(state, url)
-
-
-def all_tags(state: dict) -> list:
-    tags = set()
-    for url, row in state.items():
-        if url.startswith("__") or not isinstance(row, dict):
-            continue
-        for t in row.get("tags", []) or []:
-            tags.add(t)
-    return sorted(tags)
-
-
-def _meta(state: dict) -> dict:
-    m = state.get(_META_KEY)
-    if not isinstance(m, dict):
-        m = {}
-        state[_META_KEY] = m
-    return m
-
-
-def get_last_seen_version(state: dict):
-    return _meta(state).get("last_seen_version")
-
-
-def set_last_seen_version(state: dict, version: str):
-    _meta(state)["last_seen_version"] = version
-
-
-def get_resume(state: dict):
-    return _meta(state).get("resume")
-
-
-def set_resume(state: dict, resume: dict):
-    _meta(state)["resume"] = resume
-
-
-def clear_resume(state: dict):
-    _meta(state).pop("resume", None)
-
-
-_FILTER_HISTORY_MAX = 10
-
-
-def get_filter_history(state: dict) -> list:
-    """Return saved filter sets, newest first. Skips any corrupt entries."""
-    out = []
-    for d in _meta(state).get("filter_history", []) or []:
-        try:
-            out.append(FilterSpec.from_dict(d))
-        except Exception:
-            continue
-    return out
-
-
-def record_filter(state: dict, spec: "FilterSpec", path: str = STATE_FILE):
-    """Remember an applied filter (newest first, deduped, capped at 10).
-
-    Site-only specs carry no real constraints, so they aren't recorded."""
-    if spec.is_empty():
-        return
-    d = spec.to_dict()
-    hist = [h for h in (_meta(state).get("filter_history", []) or []) if h != d]
-    hist.insert(0, d)
-    _meta(state)["filter_history"] = hist[:_FILTER_HISTORY_MAX]
-    save_state(state, path)
-
-
-def should_show_whatsnew(last_seen, current: str, changelog: dict,
-                         existing_user: bool = False) -> bool:
-    """Show the popup on a real upgrade to a version we have notes for.
-
-    `last_seen` missing means either a brand-new install OR a returning user
-    upgrading from a pre-tracking version (which never wrote last_seen).
-    `existing_user` (prior data files present) distinguishes the two: a
-    returning user sees the notes; a fresh install stays silent.
-    """
-    if current not in changelog:
-        return False
-    if not last_seen:
-        return existing_user    # upgrade-from-old (has data) shows; fresh install silent
-    return last_seen != current
-
-
-def _serialize_filter(filter_kind, filter_value):
-    if filter_kind == "month":
-        return [filter_value[0], filter_value[1]]
-    if filter_kind == "day":
-        return filter_value.isoformat()
-    if filter_kind == "tag":
-        return filter_value
-    return None
-
-
-def _deserialize_filter(filter_kind, value):
-    if filter_kind == "month" and value:
-        return "month", (value[0], value[1])
-    if filter_kind == "day" and value:
-        return "day", datetime.fromisoformat(value)
-    if filter_kind == "tag" and value:
-        return "tag", value
-    return None, None
-
-
-# ---------------------------------------------------------------------------
 # Clipboard copy
 # ---------------------------------------------------------------------------
 
@@ -2512,43 +1799,26 @@ def show_help():
         ("Search & filter", [
             ("s", "Search by title"),
             ("S", "Search in article text"),
-            ("f", "Filter: title, text, tags, dates, sites (remembers recent)"),
+            ("f", "Compound filter (title + text + dates + sites)"),
             ("m", "Filter by month"),
             ("d", "Filter by day"),
             ("c", "Clear filter"),
         ]),
         ("Actions", [
             ("y", "Copy URL to clipboard"),
-            ("r", "Mark article read / unread"),
             ("b", "Bookmark / unbookmark current article"),
             ("B", "View all bookmarks"),
             ("t", "Toggle timeline chart"),
             ("w", "Word cloud"),
         ]),
-        ("In an article", [
-            ("r", "Mark read / unread"),
-            ("g", "Edit tags"),
-            ("b", "Bookmark / unbookmark"),
-            ("/", "Search within the article"),
-            ("w", "Word cloud"),
-            ("backspace", "Back to the list"),
-        ]),
-        ("In bookmarks", [
-            ("f", "Filter (incl. tags)"),
-            ("c", "Clear filter"),
-            ("r", "Remove bookmark"),
-            ("Enter", "Open bookmark"),
-        ]),
         ("Updates", [
             ("u", "Quick update (fetch latest)"),
             ("U", "Scrape custom date range"),
-            ("A", "Apply a downloaded update now (when available)"),
         ]),
         ("Site selector", [
             ("s", "Search across all sites"),
             ("f", "Compound filter across selected sites"),
             ("g", "Get update from GitHub"),
-            ("A", "Apply a downloaded update now (when available)"),
             ("!", "STELLAAAAAA!"),
             ("Enter", "Open site"),
         ]),
@@ -2607,10 +1877,7 @@ def global_search():
 
 def site_selector() -> int | None:
     """Show list of sites. Returns SITES index or None to quit."""
-    global _dance_shown
-    # Dance only on the first selector of the run, not every time the user
-    # backs out of a site into the selector again.
-    pending_dance = not _dance_shown
+    dance_for_stella()
     # Pre-scan CSV info for each site
     site_info = []
     for i, site in enumerate(SITES):
@@ -2656,12 +1923,6 @@ def site_selector() -> int | None:
             print(c(banner, "accent", "bold"))
         print()
 
-        if pending_dance:
-            dance_for_stella()       # floats on top of the menu just rendered above
-            pending_dance = False
-            _dance_shown = True      # don't dance again on later selector visits
-            continue                 # redraw the menu cleanly without the dancer
-
         key = read_key()
         if key in ("q", "quit"):
             return None
@@ -2696,13 +1957,6 @@ def site_selector() -> int | None:
                         break
         elif key == "!":
             dance_for_stella()
-        elif key == "A":
-            with _update_lock:
-                pend = _update_status["downloaded"]
-                pend_v = _update_status["remote_version"]
-            if pend and confirm_modal(f"Update to Stella v{pend_v} now?"):
-                state = load_state()
-                apply_update_and_relaunch(state, {})  # no list position to resume
 
 
 # ---------------------------------------------------------------------------
@@ -3150,7 +2404,8 @@ def dance_for_stella():
     def write(s: str):
         sys.stdout.write(s)
 
-    write("\033[?25l")  # hide cursor (no clear — overlay on top of current screen)
+    write("\033[?25l")  # hide cursor
+    clear_screen()
 
     # Border (rounded)
     border_top = "╭" + "─" * inner_w + "╮"
@@ -3198,105 +2453,6 @@ def dance_for_stella():
     sys.stdout.flush()
 
 
-def show_whatsnew(version: str):
-    import textwrap
-    lines = CHANGELOG.get(version, [])
-    cols, rows = term_size()
-    title = f"What's new in Stella v{version}"
-    inner_w = max(40, min(76, cols - 4))
-    wrap_w = inner_w - 4  # room for the "• " bullet + a right margin
-    wrapped = []
-    for ln in lines:
-        segs = textwrap.wrap(ln, wrap_w) or [""]
-        wrapped.append("• " + segs[0])
-        wrapped.extend("  " + seg for seg in segs[1:])  # hang-indent continuations
-    body = [title, ""] + wrapped + ["", "(press any key)"]
-    box_h = len(body) + 2
-    if cols < inner_w + 4 or rows < box_h + 2:
-        clear_screen()
-        print(c(title, "title", "bold"))
-        print()
-        for ln in lines:
-            print(c(f"  • {ln}", "text"))
-        print()
-        print(c("  (press any key)", "dim"))
-        read_key()
-        return
-    top = max(1, (rows - box_h) // 2)
-    left = max(1, (cols - (inner_w + 2)) // 2)
-
-    def at(r, col):
-        sys.stdout.write(f"\033[{r};{col}H")
-
-    sys.stdout.write("\033[?25l")
-    sys.stdout.write(c("\033[%d;%dH╭%s╮" % (top, left, "─" * inner_w), "accent"))
-    for i in range(1, box_h - 1):
-        at(top + i, left)
-        sys.stdout.write(c("│" + " " * inner_w + "│", "accent"))
-    at(top + box_h - 1, left)
-    sys.stdout.write(c("╰" + "─" * inner_w + "╯", "accent"))
-    for i, s in enumerate(body):
-        at(top + 1 + i, left + 2)
-        if i == 0:
-            sys.stdout.write(c(s, "title", "bold"))
-        elif s == "(press any key)":
-            sys.stdout.write(c(s, "dim"))
-        else:
-            sys.stdout.write(c(s, "text"))
-    at(min(rows, top + box_h + 1), 1)
-    sys.stdout.flush()
-    read_key()
-    sys.stdout.write("\033[?25h")
-    sys.stdout.flush()
-
-
-def confirm_modal(message: str) -> bool:
-    """Centered yes/no overlay (no screen clear). Enter = yes, Esc/backspace = no."""
-    cols, rows = term_size()
-    lines = [message, "", "[Enter] yes    [Esc] not now"]
-    inner_w = max(30, min(70, max(len(s) for s in lines) + 4))
-    top = max(1, rows // 2 - 2)
-    left = max(1, (cols - (inner_w + 2)) // 2)
-    print(f"\033[{top};{left}H" + c("╭" + "─" * inner_w + "╮", "accent"))
-    for i, s in enumerate(lines):
-        print(f"\033[{top + 1 + i};{left}H" +
-              c("│", "accent") + s.center(inner_w) + c("│", "accent"))
-    print(f"\033[{top + 1 + len(lines)};{left}H" + c("╰" + "─" * inner_w + "╯", "accent"))
-    sys.stdout.flush()
-    while True:
-        k = read_key()
-        if k == "enter":
-            return True
-        if k in ("esc", "backspace", "q", "quit"):
-            return False
-
-
-def apply_update_and_relaunch(state: dict, resume: dict):
-    """Persist resume, swap in the pending update, then relaunch.
-
-    On POSIX we re-exec in place. On Windows os.execv does not cleanly replace
-    the process (the launcher regains the console and collides with the new
-    instance), so we apply and ask the user to reopen — the saved resume means
-    they still land back where they were.
-    """
-    set_resume(state, resume)
-    save_state(state)
-    apply_pending_update_if_any()
-    exit_fullscreen()
-    clear_screen()
-    if IS_WINDOWS:
-        print(c("\n  ✓ Stella has been updated.\n", "accent", "bold"))
-        print(c("  Please close this window and open Stella again.", "title", "bold"))
-        print(c("  You'll pick up right where you left off.\n", "dim"))
-        print(c("  (press any key to exit)", "dim"))
-        read_key()
-        sys.exit(0)
-    print(c("\n  Updating Stella… restarting.\n", "accent", "bold"))
-    sys.stdout.flush()
-    python = sys.executable
-    os.execv(python, [python, os.path.abspath(__file__)] + sys.argv[1:])
-
-
 # ---------------------------------------------------------------------------
 # Self-update from GitHub
 #
@@ -3314,6 +2470,8 @@ def apply_update_and_relaunch(state: dict, resume: dict):
 # running process. The new code only loads on the next launch.
 # ---------------------------------------------------------------------------
 
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+
 _update_status = {
     "downloaded": False,
     "remote_version": None,
@@ -3330,9 +2488,6 @@ def _version_tuple(v: str) -> tuple:
 
 
 def _raw_url(fname: str) -> str:
-    base = os.environ.get("STELLA_UPDATE_BASE")
-    if base:
-        return base.rstrip("/") + "/" + fname
     return (f"https://raw.githubusercontent.com/{GITHUB_OWNER}/"
             f"{GITHUB_REPO}/{UPDATE_BRANCH}/{fname}")
 
@@ -3483,12 +2638,6 @@ def trigger_manual_check_in_background():
 
 def start_update_checker():
     """Skip silently if repo placeholder isn't configured."""
-    if os.environ.get("STELLA_FAKE_DOWNLOADED"):
-        with _update_lock:
-            _update_status["downloaded"] = True
-            _update_status["remote_version"] = os.environ.get(
-                "STELLA_FAKE_DOWNLOADED")  # e.g. "1.1.1"
-        return
     if not GITHUB_OWNER or not GITHUB_REPO:
         return
     t = threading.Thread(
@@ -3510,47 +2659,13 @@ def update_banner_line() -> str | None:
 # Main entry point
 # ---------------------------------------------------------------------------
 
-def _restore_from_resume(resume: dict):
-    """Best-effort: jump back into the site/list/article the user left."""
-    slug = resume.get("slug")
-    if not slug:
-        return
-    site = next((s for s in SITES if site_slug(s) == slug), None)
-    if site is None:
-        return  # site no longer exists; start at selector
-    posts = load_shards(slug)
-    paginate_posts(posts, all_posts=posts, site=site, slug=slug, resume=resume)
-
-
 def main():
     _enable_win_ansi()
-    hard_clear()  # one-time scrollback wipe so nothing ghosts behind the first frame
     apply_pending_update_if_any()
     start_update_checker()
 
-    enter_fullscreen()            # own the screen so list views can't drift
-    atexit.register(exit_fullscreen)  # always restore the terminal on exit
-
-    state = load_state()
-    current = __version__
-    # A returning user (prior bookmarks/seen data) upgrading from a pre-1.1.0
-    # version has no last_seen_version yet — still show them the notes.
-    existing_user = (os.path.exists(BOOKMARK_FILE)
-                     or os.path.exists(os.path.join(SCRIPT_DIR, "stella_seen.json")))
-    if should_show_whatsnew(get_last_seen_version(state), current, CHANGELOG, existing_user):
-        show_whatsnew(current)
-    set_last_seen_version(state, current)
-    save_state(state)
-
-    resume = get_resume(state)
-    if resume:
-        clear_resume(state)
-        save_state(state)
-        _restore_from_resume(resume)
-
-    # Backward compat: direct CSV path as argument (skip if we just restored a
-    # resume — that launch belongs to the update flow, not a CSV invocation)
-    if not resume and len(sys.argv) > 1:
+    # Backward compat: direct CSV path as argument
+    if len(sys.argv) > 1:
         csv_path = sys.argv[1]
         posts = load_csv(csv_path)
         if not posts:
@@ -3570,7 +2685,6 @@ def main():
         posts = load_shards(slug)
         site_menu(site, posts, slug=slug, all_loaded=True)
 
-    exit_fullscreen()
     clear_screen()
     print(c("\nBye!\n", "dim"))
 
