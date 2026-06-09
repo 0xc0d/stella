@@ -1464,10 +1464,10 @@ def tag_picker(state: dict, url: str):
         print(c("  Current: ", "dim") + (c(" · ".join(sorted(current)), "accent")
                                          if current else c("(none)", "dim")))
         print()
-        print(c("  ↑↓ move   Space toggle   [n] new tag   [backspace] done", "dim"))
+        print(c("  ↑↓ move   Space/Enter toggle   [n] new tag   [backspace] done", "dim"))
 
         key = read_key()
-        if key in ("backspace", "esc", "enter", "q", "quit"):
+        if key in ("backspace", "esc", "q", "quit"):
             break
         elif key == "up":
             if existing:
@@ -1483,7 +1483,7 @@ def tag_picker(state: dict, url: str):
                 tags.append(new)
                 set_tags(state, url, tags)
                 save_state(state)
-        elif key == " ":
+        elif key in (" ", "enter"):
             if existing and 0 <= cursor < len(existing):
                 t = existing[cursor]
                 tags = get_tags(state, url)
