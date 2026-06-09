@@ -1979,8 +1979,11 @@ def load_state(path: str = STATE_FILE) -> dict:
 
 
 def save_state(state: dict, path: str = STATE_FILE):
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(state, f, ensure_ascii=False, indent=2)
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(state, f, ensure_ascii=False, indent=2)
+    except OSError:
+        pass  # read-only install dir etc. — never crash the UI over state persistence
 
 
 def _row(state: dict, url: str) -> dict:
