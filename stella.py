@@ -1661,9 +1661,9 @@ def paginate_posts(posts: list[dict], highlight: str | None = None, all_posts: l
                             (f" matching '{hl_label}'" if hl_label else ""))
         elif key == "enter" and total > 0:
             post = display[cursor]
-            show_post_detail(post, highlight)
-            set_read(state, post.get("url", ""), True)
+            set_read(state, post.get("url", ""), True)  # opening marks read
             save_state(state)
+            show_post_detail(post, highlight)
             state = load_state()  # pick up any in-detail read toggle
             bookmarks = load_bookmarks()
             bm_urls = {b.get("url") for b in bookmarks}
@@ -1873,9 +1873,9 @@ def show_bookmarks(posts: list[dict] | None = None):
         elif key == "enter" and total > 0:
             bm = shown[cursor]
             full_post = post_by_url.get(bm.get("url"), bm)
-            show_post_detail(full_post)
-            set_read(state, bm.get("url", ""), True)
+            set_read(state, bm.get("url", ""), True)  # opening marks read
             save_state(state)
+            show_post_detail(full_post)
             state = load_state()  # pick up any in-detail read toggle
         elif key == "r" and total > 0:
             remove_bookmark(shown[cursor].get("url", ""))
