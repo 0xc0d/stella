@@ -20,7 +20,7 @@ import random
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
-__version__ = "1.1.3"
+__version__ = "1.1.4"
 
 GITHUB_OWNER = "0xc0d"
 GITHUB_REPO = "stella"
@@ -28,6 +28,10 @@ UPDATE_BRANCH = "main"
 UPDATE_FILES = ["stella.py", "scraper.py", "Stella.cmd",
                 "repair_text.py", "backfill.py"]
 CHANGELOG = {
+    "1.1.4": [
+        "Fix: Stella now runs in the classic console instead of Windows "
+        "Terminal, which was trailing/ghosting text while scrolling.",
+    ],
     "1.1.3": [
         "Fix: scrolling no longer flickers/ghosts in Windows Terminal.",
         "Fix: what's-new notes now wrap inside their box.",
@@ -188,14 +192,14 @@ def term_size():
 
 
 def clear_screen():
-    # Per-frame clear: erase screen (2J) + home (H). This is the redraw used on
-    # every keypress, so it must NOT touch the scrollback — wiping scrollback
-    # (3J) each frame makes Windows Terminal flicker/jump while scrolling. The
-    # one-time scrollback wipe lives in hard_clear(), called once at startup.
-    if _VT_ENABLED:
-        print("\033[2J\033[H", end="", flush=True)
-    else:
+    # Byte-identical to v1.0.2 (the last build that scrolled cleanly): cls on
+    # Windows, ANSI elsewhere. The one-time scrollback wipe for 1.1.x's extra
+    # startup screens lives in hard_clear(), called once at startup — never
+    # per-frame (3J every keypress flickers Windows Terminal).
+    if IS_WINDOWS:
         os.system("cls")
+    else:
+        print("\033[2J\033[H", end="", flush=True)
 
 
 def hard_clear():
