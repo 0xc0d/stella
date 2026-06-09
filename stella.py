@@ -20,13 +20,22 @@ import random
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
-__version__ = "1.0.2"
+__version__ = "1.1.0"
 
 GITHUB_OWNER = "0xc0d"
 GITHUB_REPO = "stella"
 UPDATE_BRANCH = "main"
 UPDATE_FILES = ["stella.py", "scraper.py", "Stella.cmd",
                 "repair_text.py", "backfill.py"]
+CHANGELOG = {
+    "1.1.0": [
+        "Read tracking — opening an article marks it read; press r to toggle.",
+        "Read articles show dimmed in the list.",
+        "Tags — press g to tag any article (pick existing or type a new one).",
+        "Press G to filter the list by tag; B (bookmarks) has a tag filter too.",
+        "Updates now apply in place and drop you back where you were.",
+    ],
+}
 UPDATE_CHECK_INTERVAL_SEC = 10 * 60
 UPDATE_RETRY_INTERVAL_SEC = 60
 
@@ -2026,6 +2035,15 @@ def clear_resume(state: dict):
     _meta(state).pop("resume", None)
 
 
+def should_show_whatsnew(last_seen, current: str, changelog: dict) -> bool:
+    """Show the popup only on a real upgrade to a version we have notes for."""
+    if not last_seen:           # first-ever run: set baseline silently
+        return False
+    if last_seen == current:
+        return False
+    return current in changelog
+
+
 # ---------------------------------------------------------------------------
 # Clipboard copy
 # ---------------------------------------------------------------------------
@@ -2720,6 +2738,51 @@ def dance_for_stella():
 
     read_key()
     write("\033[?25h")  # show cursor
+    sys.stdout.flush()
+
+
+def show_whatsnew(version: str):
+    lines = CHANGELOG.get(version, [])
+    cols, rows = term_size()
+    title = f"What's new in Stella v{version}"
+    body = [title, ""] + [f"• {ln}" for ln in lines] + ["", "(press any key)"]
+    inner_w = max(40, min(76, max(len(s) for s in body) + 4))
+    box_h = len(body) + 2
+    if cols < inner_w + 4 or rows < box_h + 2:
+        clear_screen()
+        print(c(title, "title", "bold"))
+        print()
+        for ln in lines:
+            print(c(f"  • {ln}", "text"))
+        print()
+        print(c("  (press any key)", "dim"))
+        read_key()
+        return
+    top = max(1, (rows - box_h) // 2)
+    left = max(1, (cols - (inner_w + 2)) // 2)
+
+    def at(r, col):
+        sys.stdout.write(f"\033[{r};{col}H")
+
+    sys.stdout.write("\033[?25l")
+    sys.stdout.write(c("\033[%d;%dH╭%s╮" % (top, left, "─" * inner_w), "accent"))
+    for i in range(1, box_h - 1):
+        at(top + i, left)
+        sys.stdout.write(c("│" + " " * inner_w + "│", "accent"))
+    at(top + box_h - 1, left)
+    sys.stdout.write(c("╰" + "─" * inner_w + "╯", "accent"))
+    for i, s in enumerate(body):
+        at(top + 1 + i, left + 2)
+        if i == 0:
+            sys.stdout.write(c(s, "title", "bold"))
+        elif s == "(press any key)":
+            sys.stdout.write(c(s, "dim"))
+        else:
+            sys.stdout.write(c(s, "text"))
+    at(min(rows, top + box_h + 1), 1)
+    sys.stdout.flush()
+    read_key()
+    sys.stdout.write("\033[?25h")
     sys.stdout.flush()
 
 
