@@ -1629,6 +1629,10 @@ def paginate_posts(posts: list[dict], highlight: str | None = None, all_posts: l
             c(f" p.{page + 1}/{total_pages} ", "dim") +
             c(f" ↑↓ move  ←→ page  [s] title  [S] txt  [f] filter  [b] bookmark  [B] bookmarks{filter_hint}{update_hint}  [?] help", "dim")
         )
+        with _update_lock:
+            _pending_v = _update_status["remote_version"] if _update_status["downloaded"] else None
+        if _pending_v:
+            print(c(f"  ★ Stella v{_pending_v} ready — press A to update now", "accent", "bold"))
 
         key = read_key()
 
@@ -1677,6 +1681,19 @@ def paginate_posts(posts: list[dict], highlight: str | None = None, all_posts: l
                 filter_kind = "tag"
                 filter_value = chosen
                 cursor = 0
+        elif key == "A":
+            with _update_lock:
+                pend = _update_status["downloaded"]
+                pend_v = _update_status["remote_version"]
+            if pend and confirm_modal(f"Update to Stella v{pend_v} now?"):
+                resume = {
+                    "slug": slug,
+                    "cursor": cursor,
+                    "filter_kind": filter_kind,
+                    "filter_value": _serialize_filter(filter_kind, filter_value),
+                    "open_url": None,
+                }
+                apply_update_and_relaunch(state, resume)
         elif key == "b" and total > 0:
             post = display[cursor]
             if post.get("url") in bm_urls:
@@ -2278,6 +2295,13 @@ def site_selector() -> int | None:
                         break
         elif key == "!":
             dance_for_stella()
+        elif key == "A":
+            with _update_lock:
+                pend = _update_status["downloaded"]
+                pend_v = _update_status["remote_version"]
+            if pend and confirm_modal(f"Update to Stella v{pend_v} now?"):
+                state = load_state()
+                apply_update_and_relaunch(state, {})  # no list position to resume
 
 
 # ---------------------------------------------------------------------------
@@ -2819,6 +2843,40 @@ def show_whatsnew(version: str):
     sys.stdout.flush()
 
 
+def confirm_modal(message: str) -> bool:
+    """Centered yes/no. Enter = yes, Esc/backspace = no."""
+    clear_screen()
+    cols, rows = term_size()
+    lines = [message, "", "[Enter] yes    [Esc] later"]
+    inner_w = max(30, min(70, max(len(s) for s in lines) + 4))
+    top = max(1, rows // 2 - 2)
+    left = max(1, (cols - (inner_w + 2)) // 2)
+    print(f"\033[{top};{left}H" + c("╭" + "─" * inner_w + "╮", "accent"))
+    for i, s in enumerate(lines):
+        print(f"\033[{top + 1 + i};{left}H" +
+              c("│", "accent") + s.center(inner_w) + c("│", "accent"))
+    print(f"\033[{top + 1 + len(lines)};{left}H" + c("╰" + "─" * inner_w + "╯", "accent"))
+    sys.stdout.flush()
+    while True:
+        k = read_key()
+        if k == "enter":
+            return True
+        if k in ("esc", "backspace", "q", "quit"):
+            return False
+
+
+def apply_update_and_relaunch(state: dict, resume: dict):
+    """Persist resume, swap in the pending update, and re-exec in place."""
+    set_resume(state, resume)
+    save_state(state)
+    apply_pending_update_if_any()
+    clear_screen()
+    print(c("\n  Updating Stella… restarting.\n", "accent", "bold"))
+    sys.stdout.flush()
+    python = sys.executable
+    os.execv(python, [python, os.path.abspath(__file__)] + sys.argv[1:])
+
+
 # ---------------------------------------------------------------------------
 # Self-update from GitHub
 #
@@ -2852,6 +2910,9 @@ def _version_tuple(v: str) -> tuple:
 
 
 def _raw_url(fname: str) -> str:
+    base = os.environ.get("STELLA_UPDATE_BASE")
+    if base:
+        return base.rstrip("/") + "/" + fname
     return (f"https://raw.githubusercontent.com/{GITHUB_OWNER}/"
             f"{GITHUB_REPO}/{UPDATE_BRANCH}/{fname}")
 
@@ -3002,6 +3063,12 @@ def trigger_manual_check_in_background():
 
 def start_update_checker():
     """Skip silently if repo placeholder isn't configured."""
+    if os.environ.get("STELLA_FAKE_DOWNLOADED"):
+        with _update_lock:
+            _update_status["downloaded"] = True
+            _update_status["remote_version"] = os.environ.get(
+                "STELLA_FAKE_DOWNLOADED")  # e.g. "1.1.1"
+        return
     if not GITHUB_OWNER or not GITHUB_REPO:
         return
     t = threading.Thread(

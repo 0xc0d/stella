@@ -46,5 +46,19 @@ class FilterSerializeTest(unittest.TestCase):
         self.assertEqual(stella._deserialize_filter("tag", v), ("tag", "politics"))
 
 
+class RawUrlTest(unittest.TestCase):
+    def tearDown(self):
+        os.environ.pop("STELLA_UPDATE_BASE", None)
+
+    def test_default_is_github(self):
+        os.environ.pop("STELLA_UPDATE_BASE", None)
+        self.assertIn("raw.githubusercontent.com", stella._raw_url("stella.py"))
+
+    def test_env_override(self):
+        os.environ["STELLA_UPDATE_BASE"] = "http://localhost:8000/x/"
+        self.assertEqual(stella._raw_url("stella.py"),
+                         "http://localhost:8000/x/stella.py")
+
+
 if __name__ == "__main__":
     unittest.main()
