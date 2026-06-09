@@ -18,6 +18,10 @@ start "STELLA" conhost.exe cmd /c ""%~f0" --inner"
 exit /b 0
 
 :RUN
+REM The inner conhost cmd starts in a fresh CWD (often System32), so re-enter
+REM the script's folder here too. stella.py reads posts_*.csv relative to CWD;
+REM without this it finds nothing and every site shows 0 data.
+cd /d "%~dp0"
 title STELLA - News Reader
 REM Make the window large so the list has room.
 mode con cols=180 lines=50 >nul 2>&1

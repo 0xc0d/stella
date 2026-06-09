@@ -20,7 +20,7 @@ import random
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
-__version__ = "1.1.9"  # exact v1.0.2 (2026-05-07) code; version bumped so auto-update ships the rollback
+__version__ = "1.1.10"  # exact v1.0.2 (2026-05-07) code; bump re-ships fixed Stella.cmd (cd into folder after conhost relaunch)
 
 GITHUB_OWNER = "0xc0d"
 GITHUB_REPO = "stella"
