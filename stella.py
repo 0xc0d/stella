@@ -997,8 +997,12 @@ def show_post_detail(post: dict, highlight=None):
         elif key == "r":
             if url:
                 _state = load_state()
-                set_read(_state, url, not is_read(_state, url))
+                new_value = not is_read(_state, url)
+                set_read(_state, url, new_value)
                 save_state(_state)
+                print(c("  ✓ marked " + ("read" if new_value else "unread"),
+                        "accent", "bold"), end="\r", flush=True)
+                time.sleep(0.6)
             return show_post_detail(post, highlight)  # re-render with updated read state
         elif key == "g":
             _state = load_state()
