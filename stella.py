@@ -964,11 +964,11 @@ def show_post_detail(post: dict, highlight=None):
         print(c("  ★ Bookmarked", "bookmark"), end="")
         wc_hint = "  [w] word cloud" if has_text else ""
         search_hint = "  [/] search" if has_text else ""
-        print(c(f"  |  [b] remove bookmark{wc_hint}{search_hint}  [backspace] back", "dim"))
+        print(c(f"  |  [b] remove bookmark  [r] read{wc_hint}{search_hint}  [backspace] back", "dim"))
     else:
         wc_hint = "  [w] word cloud" if has_text else ""
         search_hint = "  [/] search" if has_text else ""
-        print(c(f"  [b] bookmark{wc_hint}{search_hint}  [backspace] back", "dim"))
+        print(c(f"  [b] bookmark  [r] read{wc_hint}{search_hint}  [backspace] back", "dim"))
 
     while True:
         key = read_key()
@@ -993,9 +993,9 @@ def show_post_detail(post: dict, highlight=None):
             print(f"\033[A\033[2K", end="")  # move up, clear line
             if is_bm:
                 print(c("  ★ Bookmarked", "bookmark"), end="")
-                print(c("  |  [b] remove bookmark  [backspace] back", "dim"))
+                print(c("  |  [b] remove bookmark  [r] read  [backspace] back", "dim"))
             else:
-                print(c("  [b] bookmark  [backspace] back", "dim"))
+                print(c("  [b] bookmark  [r] read  [backspace] back", "dim"))
         elif key == "r":
             url = post.get("url", "")
             if url:
