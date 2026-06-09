@@ -1483,6 +1483,11 @@ def tag_picker(state: dict, url: str):
                 tags.append(new)
                 set_tags(state, url, tags)
                 save_state(state)
+                # land the cursor on the just-added tag (list is sorted)
+                added = normalize_tag(new)
+                refreshed = all_tags(state)
+                if added in refreshed:
+                    cursor = refreshed.index(added)
         elif key in (" ", "enter"):
             if existing and 0 <= cursor < len(existing):
                 t = existing[cursor]
@@ -1554,9 +1559,10 @@ def paginate_posts(posts: list[dict], highlight: str | None = None, all_posts: l
         if open_url:
             match = next((p for p in posts if p.get("url") == open_url), None)
             if match is not None:
-                show_post_detail(match)
-                set_read(state, open_url, True)
+                set_read(state, open_url, True)  # opening marks read (before detail)
                 save_state(state)
+                show_post_detail(match)
+                state = load_state()  # pick up any in-detail toggle
 
     while True:
         # Derive displayed list from filter
@@ -1601,13 +1607,17 @@ def paginate_posts(posts: list[dict], highlight: str | None = None, all_posts: l
             right = c("[d] go to date  [m] jump to month", "dim")
         print(left + "    " + right)
 
+        with _update_lock:
+            _pending_v = _update_status["remote_version"] if _update_status["downloaded"] else None
+        banner_rows = 1 if _pending_v else 0
+
         chart_lines = []
         if show_chart:
             chart_height = max(5, (term_h * 2) // 5)
             chart_lines = render_chart(display, all_posts, chart_height, min(tw, 120))
-            page_size = max(3, term_h - len(chart_lines) - 4)
+            page_size = max(3, term_h - len(chart_lines) - 4 - banner_rows)
         else:
-            page_size = max(3, term_h - 4)
+            page_size = max(3, term_h - 4 - banner_rows)
 
         total_pages = max(1, (total + page_size - 1) // page_size) if total else 1
         page = cursor // page_size if total else 0
@@ -1634,16 +1644,19 @@ def paginate_posts(posts: list[dict], highlight: str | None = None, all_posts: l
         print()
         has_any_text = any(p.get("text") for p in display) if display else False
         cur_disp = (cursor + 1) if total else 0
-        filter_hint = f"  filter: {filter_kind}" if filter_kind else ""
+        if filter_kind == "tag":
+            filter_hint = f"  [{filter_value}]"
+        elif filter_kind:
+            filter_hint = f"  filter: {filter_kind}"
+        else:
+            filter_hint = ""
         update_hint = "  [u] update" if can_scrape else ""
         r_hint = "[r] mark unread" if (total > 0 and is_read(state, display[cursor].get("url", ""))) else "[r] mark read"
         print(
             c(f" {cur_disp}/{total} ", "accent") +
             c(f" p.{page + 1}/{total_pages} ", "dim") +
-            c(f" ↑↓ move  ←→ page  [s] title  {r_hint}  [g] tag  [G] tag filter  [b] bookmark  [B] bookmarks{filter_hint}{update_hint}  [?] help", "dim")
+            c(f" ↑↓ move  [s] title  {r_hint}  [g] tag  [G] filter  [b] bm  [B] bms{filter_hint}{update_hint}  [?] help", "dim")
         )
-        with _update_lock:
-            _pending_v = _update_status["remote_version"] if _update_status["downloaded"] else None
         if _pending_v:
             print(c(f"  ★ Stella v{_pending_v} ready — press A to update now", "accent", "bold"))
 
@@ -1856,6 +1869,10 @@ def show_bookmarks(posts: list[dict] | None = None):
         start = page * page_size
         end = min(start + page_size, total)
 
+        if total == 0:
+            print()
+            print(c(f"  No bookmarks tagged “{tag_filter}”.  [c] clear filter", "warn"))
+
         for i in range(start, end):
             print_post_line(i + 1, shown[i], bookmarked=True, selected=(i == cursor),
                             read=is_read(state, shown[i].get("url", "")))
@@ -1863,7 +1880,7 @@ def show_bookmarks(posts: list[dict] | None = None):
         print()
         print(
             c(f" {cursor + 1 if total else 0}/{total} ", "accent") +
-            c(" ↑↓ navigate  Enter view  [t] tag filter  [c] clear  [r] remove  [backspace] back", "dim")
+            c(" ↑↓ navigate  Enter view  [G] tag filter  [c] clear  [r] remove  [backspace] back", "dim")
         )
 
         key = read_key()
@@ -1875,7 +1892,7 @@ def show_bookmarks(posts: list[dict] | None = None):
         elif key == "up":
             if cursor > 0:
                 cursor -= 1
-        elif key == "t":
+        elif key == "G":
             chosen = pick_tag(state)
             if chosen is not None:
                 tag_filter = chosen
@@ -2875,10 +2892,9 @@ def show_whatsnew(version: str):
 
 
 def confirm_modal(message: str) -> bool:
-    """Centered yes/no. Enter = yes, Esc/backspace = no."""
-    clear_screen()
+    """Centered yes/no overlay (no screen clear). Enter = yes, Esc/backspace = no."""
     cols, rows = term_size()
-    lines = [message, "", "[Enter] yes    [Esc] later"]
+    lines = [message, "", "[Enter] yes    [Esc] not now"]
     inner_w = max(30, min(70, max(len(s) for s in lines) + 4))
     top = max(1, rows // 2 - 2)
     left = max(1, (cols - (inner_w + 2)) // 2)
@@ -2897,11 +2913,24 @@ def confirm_modal(message: str) -> bool:
 
 
 def apply_update_and_relaunch(state: dict, resume: dict):
-    """Persist resume, swap in the pending update, and re-exec in place."""
+    """Persist resume, swap in the pending update, then relaunch.
+
+    On POSIX we re-exec in place. On Windows os.execv does not cleanly replace
+    the process (the launcher regains the console and collides with the new
+    instance), so we apply and ask the user to reopen — the saved resume means
+    they still land back where they were.
+    """
     set_resume(state, resume)
     save_state(state)
     apply_pending_update_if_any()
     clear_screen()
+    if IS_WINDOWS:
+        print(c("\n  ✓ Stella has been updated.\n", "accent", "bold"))
+        print(c("  Please close this window and open Stella again.", "title", "bold"))
+        print(c("  You'll pick up right where you left off.\n", "dim"))
+        print(c("  (press any key to exit)", "dim"))
+        read_key()
+        sys.exit(0)
     print(c("\n  Updating Stella… restarting.\n", "accent", "bold"))
     sys.stdout.flush()
     python = sys.executable
