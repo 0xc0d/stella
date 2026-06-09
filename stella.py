@@ -1679,7 +1679,7 @@ def paginate_posts(posts: list[dict], highlight: str | None = None, all_posts: l
         print(
             c(f" {cur_disp}/{total} ", "accent") +
             c(f" p.{page + 1}/{total_pages} ", "dim") +
-            c(f" ↑↓ move  [s] title  {r_hint}  [g] tag  [f] filter  [b] bm  [B] bms{filter_hint}{update_hint}  [?] help", "dim")
+            c(f" ↑↓ move  [s] title  {r_hint}  [f] filter  [b] bm  [B] bms{filter_hint}{update_hint}  [?] help", "dim")
         )
         if _pending_v:
             print(c(f"  ★ Stella v{_pending_v} ready — press A to update now", "accent", "bold"))
@@ -1722,9 +1722,6 @@ def paginate_posts(posts: list[dict], highlight: str | None = None, all_posts: l
             if url:
                 set_read(state, url, not is_read(state, url))
                 save_state(state)
-        elif key == "g" and total > 0:
-            tag_picker(state, display[cursor].get("url", ""))
-            state = load_state()
         elif key == "A":
             with _update_lock:
                 pend = _update_status["downloaded"]
@@ -2202,9 +2199,8 @@ def show_help():
         ("Actions", [
             ("y", "Copy URL to clipboard"),
             ("r", "Mark article read / unread"),
-            ("g", "Edit tags on current article"),
             ("b", "Bookmark / unbookmark current article"),
-            ("B", "View all bookmarks (with tag filter)"),
+            ("B", "View all bookmarks"),
             ("t", "Toggle timeline chart"),
             ("w", "Word cloud"),
         ]),
