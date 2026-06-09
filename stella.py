@@ -1621,10 +1621,11 @@ def paginate_posts(posts: list[dict], highlight: str | None = None, all_posts: l
         cur_disp = (cursor + 1) if total else 0
         filter_hint = f"  filter: {filter_kind}" if filter_kind else ""
         update_hint = "  [u] update" if can_scrape else ""
+        r_hint = "[r] mark unread" if (total > 0 and is_read(state, display[cursor].get("url", ""))) else "[r] mark read"
         print(
             c(f" {cur_disp}/{total} ", "accent") +
             c(f" p.{page + 1}/{total_pages} ", "dim") +
-            c(f" ↑↓ move  ←→ page  [s] title  [r] read  [g] tag  [G] tag filter  [b] bookmark  [B] bookmarks{filter_hint}{update_hint}  [?] help", "dim")
+            c(f" ↑↓ move  ←→ page  [s] title  {r_hint}  [g] tag  [G] tag filter  [b] bookmark  [B] bookmarks{filter_hint}{update_hint}  [?] help", "dim")
         )
         with _update_lock:
             _pending_v = _update_status["remote_version"] if _update_status["downloaded"] else None
