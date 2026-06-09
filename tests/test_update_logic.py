@@ -9,8 +9,15 @@ import stella
 class WhatsNewGateTest(unittest.TestCase):
     CHANGELOG = {"1.1.0": ["line a", "line b"]}
 
-    def test_first_run_does_not_show(self):
-        self.assertFalse(stella.should_show_whatsnew(None, "1.1.0", self.CHANGELOG))
+    def test_fresh_install_does_not_show(self):
+        # no last_seen + not an existing user (no prior data) → silent
+        self.assertFalse(stella.should_show_whatsnew(None, "1.1.0", self.CHANGELOG,
+                                                     existing_user=False))
+
+    def test_returning_user_no_last_seen_shows(self):
+        # upgrading from a pre-tracking version: no last_seen but has prior data
+        self.assertTrue(stella.should_show_whatsnew(None, "1.1.0", self.CHANGELOG,
+                                                    existing_user=True))
 
     def test_upgrade_shows(self):
         self.assertTrue(stella.should_show_whatsnew("1.0.2", "1.1.0", self.CHANGELOG))
@@ -20,6 +27,9 @@ class WhatsNewGateTest(unittest.TestCase):
 
     def test_no_changelog_entry_does_not_show(self):
         self.assertFalse(stella.should_show_whatsnew("1.0.2", "1.2.0", self.CHANGELOG))
+        # even a returning user sees nothing if there are no notes for this version
+        self.assertFalse(stella.should_show_whatsnew(None, "1.2.0", self.CHANGELOG,
+                                                     existing_user=True))
 
 
 from datetime import datetime

@@ -2078,13 +2078,20 @@ def clear_resume(state: dict):
     _meta(state).pop("resume", None)
 
 
-def should_show_whatsnew(last_seen, current: str, changelog: dict) -> bool:
-    """Show the popup only on a real upgrade to a version we have notes for."""
-    if not last_seen:           # first-ever run: set baseline silently
+def should_show_whatsnew(last_seen, current: str, changelog: dict,
+                         existing_user: bool = False) -> bool:
+    """Show the popup on a real upgrade to a version we have notes for.
+
+    `last_seen` missing means either a brand-new install OR a returning user
+    upgrading from a pre-tracking version (which never wrote last_seen).
+    `existing_user` (prior data files present) distinguishes the two: a
+    returning user sees the notes; a fresh install stays silent.
+    """
+    if current not in changelog:
         return False
-    if last_seen == current:
-        return False
-    return current in changelog
+    if not last_seen:
+        return existing_user    # upgrade-from-old (has data) shows; fresh install silent
+    return last_seen != current
 
 
 def _serialize_filter(filter_kind, filter_value):
@@ -3126,7 +3133,11 @@ def main():
 
     state = load_state()
     current = __version__
-    if should_show_whatsnew(get_last_seen_version(state), current, CHANGELOG):
+    # A returning user (prior bookmarks/seen data) upgrading from a pre-1.1.0
+    # version has no last_seen_version yet — still show them the notes.
+    existing_user = (os.path.exists(BOOKMARK_FILE)
+                     or os.path.exists(os.path.join(SCRIPT_DIR, "stella_seen.json")))
+    if should_show_whatsnew(get_last_seen_version(state), current, CHANGELOG, existing_user):
         show_whatsnew(current)
     set_last_seen_version(state, current)
     save_state(state)
