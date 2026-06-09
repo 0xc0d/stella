@@ -1167,10 +1167,11 @@ class FilterSpec:
     date_from: datetime | None = None
     date_to: datetime | None = None
     site_slugs: list[str] = field(default_factory=list)
+    tags: list[str] = field(default_factory=list)   # match ANY of these tags
 
     def is_empty(self) -> bool:
         return not (self.title_words or self.text_words
-                    or self.date_from or self.date_to)
+                    or self.date_from or self.date_to or self.tags)
 
     def summary(self) -> str:
         parts = []
@@ -1178,6 +1179,8 @@ class FilterSpec:
             parts.append(f"title {self.title_mode.upper()}=[{', '.join(self.title_words)}]")
         if self.text_words:
             parts.append(f"text {self.text_mode.upper()}=[{', '.join(self.text_words)}]")
+        if self.tags:
+            parts.append(f"tags=[{', '.join(self.tags)}]")
         if self.date_from or self.date_to:
             a = self.date_from.strftime("%Y-%m-%d") if self.date_from else "any"
             b = self.date_to.strftime("%Y-%m-%d") if self.date_to else "any"
@@ -1200,7 +1203,7 @@ def _match_words(haystack: str, words: list[str], mode: str) -> bool:
     return any(hit(w) for w in words)
 
 
-def apply_filter(post: dict, spec: FilterSpec) -> bool:
+def apply_filter(post: dict, spec: FilterSpec, state: dict | None = None) -> bool:
     if not _match_words(post.get("title") or "", spec.title_words, spec.title_mode):
         return False
     if not _match_words(post.get("text") or "", spec.text_words, spec.text_mode):
@@ -1213,7 +1216,56 @@ def apply_filter(post: dict, spec: FilterSpec) -> bool:
             return False
         if spec.date_to is not None and d > spec.date_to:
             return False
+    if spec.tags:
+        if state is None:
+            state = load_state()
+        post_tags = get_tags(state, post.get("url", ""))
+        if not any(t in post_tags for t in spec.tags):
+            return False
     return True
+
+
+def multiselect_tags(state: dict, preselected: list) -> list:
+    """Checkbox multi-select over all known tags. Returns the chosen list."""
+    tags = all_tags(state)
+    if not tags:
+        clear_screen()
+        print(c("\n  No tags exist yet. Press any key...", "dim"))
+        read_key()
+        return list(preselected)
+    chosen = set(preselected)
+    cursor = 0
+    while True:
+        if cursor >= len(tags):
+            cursor = len(tags) - 1
+        clear_screen()
+        print_header("Filter by tags")
+        print()
+        for i, t in enumerate(tags):
+            box = "[x]" if t in chosen else "[ ]"
+            if i == cursor:
+                print(f"  {c('▸', 'accent')} {c(box, 'accent', 'bold')} {c(t, 'title', 'bold')}")
+            else:
+                style = ("accent",) if t in chosen else ("dim",)
+                print(f"    {c(box, *style)} {c(t, *style)}")
+        print()
+        print(c("  Selected: ", "dim") + (c(" · ".join(sorted(chosen)), "accent")
+                                          if chosen else c("(none — matches all)", "dim")))
+        print()
+        print(c("  ↑↓ move   Space/Enter toggle   [backspace] done", "dim"))
+        key = read_key()
+        if key in ("backspace", "esc", "q", "quit"):
+            return sorted(chosen)
+        elif key == "up":
+            cursor = (cursor - 1) % len(tags)
+        elif key == "down":
+            cursor = (cursor + 1) % len(tags)
+        elif key in (" ", "enter"):
+            t = tags[cursor]
+            if t in chosen:
+                chosen.discard(t)
+            else:
+                chosen.add(t)
 
 
 def filter_form(default_site_slug: str | None) -> FilterSpec | None:
@@ -1223,11 +1275,12 @@ def filter_form(default_site_slug: str | None) -> FilterSpec | None:
         spec.site_slugs = [default_site_slug]
     else:
         spec.site_slugs = [site_slug(s) for s in SITES]
+    state = load_state()
 
     site_options = [(site_slug(s), s["name"]) for s in SITES]
 
     # Build the row layout. Each row is (kind, key, label).
-    # kinds: title_words, title_mode, text_words, text_mode,
+    # kinds: title_words, title_mode, text_words, text_mode, tags,
     #        date_from, date_to, site (with index in payload), action.
     def build_rows():
         rows = [
@@ -1235,6 +1288,7 @@ def filter_form(default_site_slug: str | None) -> FilterSpec | None:
             ("title_mode",  None, "Title match"),
             ("text_words",  None, "Text contains"),
             ("text_mode",   None, "Text match"),
+            ("tags",        None, "Tags"),
             ("date_from",   None, "Date from"),
             ("date_to",     None, "Date to"),
             ("header",      None, "Sites"),
@@ -1285,6 +1339,10 @@ def filter_form(default_site_slug: str | None) -> FilterSpec | None:
             elif kind == "text_mode":
                 print(arrow + c(f"{label}: ", "title", "bold" if sel else "dim") +
                       c(spec.text_mode.upper(), "accent" if sel else "info"))
+            elif kind == "tags":
+                val = " · ".join(spec.tags) if spec.tags else "(any)"
+                print(arrow + c(f"{label}: ", "title", "bold" if sel else "dim") +
+                      c(val, "accent" if sel else "info"))
             elif kind == "date_from":
                 val = spec.date_from.strftime("%Y-%m-%d") if spec.date_from else "any"
                 print(arrow + c(f"{label}: ", "title", "bold" if sel else "dim") +
@@ -1316,11 +1374,11 @@ def filter_form(default_site_slug: str | None) -> FilterSpec | None:
         if warning:
             print(c(f"  {warning}", "warn"))
             warning = ""
-        print(c("  ↑↓ navigate · Enter activate · Space toggle · g apply · Esc cancel", "dim"))
+        print(c("  ↑↓ navigate · Enter activate · Space toggle · g apply · Esc/backspace cancel", "dim"))
 
         key = read_key()
 
-        if key in ("esc", "quit"):
+        if key in ("esc", "quit", "backspace"):
             return None
         if key == "up":
             i = cursor - 1
@@ -1348,8 +1406,6 @@ def filter_form(default_site_slug: str | None) -> FilterSpec | None:
             if key == "enter":
                 term = input_line(c("  Title — comma-separate phrases (e.g. merkel, tax reform): ", "accent"))
                 spec.title_words = [w.strip().lower() for w in term.split(",") if w.strip()] if term else []
-            elif key == "backspace":
-                spec.title_words = []
         elif kind == "title_mode":
             if key in ("enter", " ", "space"):
                 spec.title_mode = "all" if spec.title_mode == "any" else "any"
@@ -1357,26 +1413,23 @@ def filter_form(default_site_slug: str | None) -> FilterSpec | None:
             if key == "enter":
                 term = input_line(c("  Text — comma-separate phrases (e.g. wirtschaft, steuer reform): ", "accent"))
                 spec.text_words = [w.strip().lower() for w in term.split(",") if w.strip()] if term else []
-            elif key == "backspace":
-                spec.text_words = []
         elif kind == "text_mode":
             if key in ("enter", " ", "space"):
                 spec.text_mode = "all" if spec.text_mode == "any" else "any"
+        elif kind == "tags":
+            if key == "enter":
+                spec.tags = multiselect_tags(state, spec.tags)
         elif kind == "date_from":
             if key == "enter":
                 picked = date_picker("Filter — date from:", spec.date_from or datetime.now())
                 if picked is not None:
                     spec.date_from = picked
-            elif key == "backspace":
-                spec.date_from = None
         elif kind == "date_to":
             if key == "enter":
                 default = spec.date_to or datetime.now()
                 picked = date_picker("Filter — date to:", default)
                 if picked is not None:
                     spec.date_to = picked.replace(hour=23, minute=59, second=59)
-            elif key == "backspace":
-                spec.date_to = None
         elif kind == "site":
             slug = site_options[payload][0]
             if key in ("enter", " ", "space"):
@@ -1414,11 +1467,12 @@ def run_filter(spec: FilterSpec, current_slug: str | None,
     each selected site's shards and annotate posts with `_site` + a prefixed
     title (the same convention global_search uses for cross-site display).
     """
+    _state = load_state()
     selected = set(spec.site_slugs)
     can_reuse = (current_slug is not None and current_posts is not None
                  and selected == {current_slug})
     if can_reuse:
-        return [p for p in current_posts if apply_filter(p, spec)]
+        return [p for p in current_posts if apply_filter(p, spec, _state)]
 
     results = []
     for s in SITES:
@@ -1426,7 +1480,7 @@ def run_filter(spec: FilterSpec, current_slug: str | None,
         if slug not in selected:
             continue
         for p in load_shards(slug):
-            if not apply_filter(p, spec):
+            if not apply_filter(p, spec, _state):
                 continue
             p_copy = dict(p)
             if len(selected) > 1:
@@ -1499,36 +1553,6 @@ def tag_picker(state: dict, url: str):
                 set_tags(state, url, tags)
                 save_state(state)
 
-
-def pick_tag(state: dict):
-    """Let the user choose one tag to filter by. Returns the tag string or None."""
-    tags = all_tags(state)
-    if not tags:
-        clear_screen()
-        print(c("\n  No tags yet. Press any key...", "dim"))
-        read_key()
-        return None
-    cursor = 0
-    while True:
-        clear_screen()
-        print_header("Filter by tag")
-        print()
-        for i, t in enumerate(tags):
-            if i == cursor:
-                print(f"  {c('▸', 'accent')} {c(t, 'title', 'bold')}")
-            else:
-                print(f"    {c(t, 'dim')}")
-        print()
-        print(c("  ↑↓ choose   Enter select   [backspace] cancel", "dim"))
-        key = read_key()
-        if key in ("backspace", "esc", "q", "quit"):
-            return None
-        elif key == "up":
-            cursor = (cursor - 1) % len(tags)
-        elif key == "down":
-            cursor = (cursor + 1) % len(tags)
-        elif key == "enter":
-            return tags[cursor]
 
 
 def paginate_posts(posts: list[dict], highlight: str | None = None, all_posts: list[dict] | None = None,
@@ -1655,7 +1679,7 @@ def paginate_posts(posts: list[dict], highlight: str | None = None, all_posts: l
         print(
             c(f" {cur_disp}/{total} ", "accent") +
             c(f" p.{page + 1}/{total_pages} ", "dim") +
-            c(f" ↑↓ move  [s] title  {r_hint}  [g] tag  [G] tag filter  [b] bm  [B] bms{filter_hint}{update_hint}  [?] help", "dim")
+            c(f" ↑↓ move  [s] title  {r_hint}  [g] tag  [f] filter  [b] bm  [B] bms{filter_hint}{update_hint}  [?] help", "dim")
         )
         if _pending_v:
             print(c(f"  ★ Stella v{_pending_v} ready — press A to update now", "accent", "bold"))
@@ -1701,12 +1725,6 @@ def paginate_posts(posts: list[dict], highlight: str | None = None, all_posts: l
         elif key == "g" and total > 0:
             tag_picker(state, display[cursor].get("url", ""))
             state = load_state()
-        elif key == "G":
-            chosen = pick_tag(state)
-            if chosen is not None:
-                filter_kind = "tag"
-                filter_value = chosen
-                cursor = 0
         elif key == "A":
             with _update_lock:
                 pend = _update_status["downloaded"]
@@ -1841,25 +1859,24 @@ def show_bookmarks(posts: list[dict] | None = None):
         return
 
     state = load_state()
-    tag_filter = None  # None | tag string
+    spec = None  # FilterSpec when filtering
     _, term_h = term_size()
     page_size = max(5, term_h - 4)
     cursor = 0
 
     while True:
-        if tag_filter is None:
+        if spec is None:
             shown = bookmarks
         else:
-            shown = [b for b in bookmarks
-                     if tag_filter in get_tags(state, b.get("url", ""))]
+            shown = [b for b in bookmarks if apply_filter(b, spec, state)]
         total = len(shown)
         if cursor >= total:
             cursor = max(0, total - 1)
 
         clear_screen()
         title = "★ Bookmarks"
-        if tag_filter is not None:
-            title += f" — tag: {tag_filter}  ({total})"
+        if spec is not None:
+            title += f" — {spec.summary()}  ({total})"
         else:
             title += f" — {len(bookmarks)} saved"
         print_header(title)
@@ -1871,7 +1888,7 @@ def show_bookmarks(posts: list[dict] | None = None):
 
         if total == 0:
             print()
-            print(c(f"  No bookmarks tagged “{tag_filter}”.  [c] clear filter", "warn"))
+            print(c("  No bookmarks match this filter.  [c] clear", "warn"))
 
         for i in range(start, end):
             print_post_line(i + 1, shown[i], bookmarked=True, selected=(i == cursor),
@@ -1880,7 +1897,7 @@ def show_bookmarks(posts: list[dict] | None = None):
         print()
         print(
             c(f" {cursor + 1 if total else 0}/{total} ", "accent") +
-            c(" ↑↓ navigate  Enter view  [G] tag filter  [c] clear  [r] remove  [backspace] back", "dim")
+            c(" ↑↓ navigate  Enter view  [f] filter  [c] clear  [r] remove  [backspace] back", "dim")
         )
 
         key = read_key()
@@ -1892,13 +1909,13 @@ def show_bookmarks(posts: list[dict] | None = None):
         elif key == "up":
             if cursor > 0:
                 cursor -= 1
-        elif key == "G":
-            chosen = pick_tag(state)
-            if chosen is not None:
-                tag_filter = chosen
+        elif key == "f":
+            picked = filter_form(default_site_slug=None)
+            if picked is not None:
+                spec = picked
                 cursor = 0
         elif key == "c":
-            tag_filter = None
+            spec = None
             cursor = 0
         elif key == "enter" and total > 0:
             bm = shown[cursor]
@@ -2177,7 +2194,7 @@ def show_help():
         ("Search & filter", [
             ("s", "Search by title"),
             ("S", "Search in article text"),
-            ("f", "Compound filter (title + text + dates + sites)"),
+            ("f", "Filter: title, text, tags, dates, sites"),
             ("m", "Filter by month"),
             ("d", "Filter by day"),
             ("c", "Clear filter"),
@@ -2186,7 +2203,6 @@ def show_help():
             ("y", "Copy URL to clipboard"),
             ("r", "Mark article read / unread"),
             ("g", "Edit tags on current article"),
-            ("G", "Filter list by tag"),
             ("b", "Bookmark / unbookmark current article"),
             ("B", "View all bookmarks (with tag filter)"),
             ("t", "Toggle timeline chart"),
@@ -2201,8 +2217,8 @@ def show_help():
             ("backspace", "Back to the list"),
         ]),
         ("In bookmarks", [
-            ("G", "Filter bookmarks by tag"),
-            ("c", "Clear tag filter"),
+            ("f", "Filter (incl. tags)"),
+            ("c", "Clear filter"),
             ("r", "Remove bookmark"),
             ("Enter", "Open bookmark"),
         ]),
