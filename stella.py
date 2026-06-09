@@ -17,10 +17,11 @@ import calendar
 import time
 import threading
 import random
+import atexit
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
-__version__ = "1.1.7"
+__version__ = "1.1.8"
 
 GITHUB_OWNER = "0xc0d"
 GITHUB_REPO = "stella"
@@ -28,6 +29,13 @@ UPDATE_BRANCH = "main"
 UPDATE_FILES = ["stella.py", "scraper.py", "Stella.cmd",
                 "repair_text.py", "backfill.py"]
 CHANGELOG = {
+    "1.1.8": [
+        "Fix: the list now always shows from the top and the view follows the "
+        "cursor — Stella runs on its own full screen, so rows no longer scroll "
+        "off the top.",
+        "The mouse wheel now moves the selection up/down in lists. Article text "
+        "still scrolls natively.",
+    ],
     "1.1.7": [
         "Revert the in-place repaint from 1.1.5 — it stacked text on long "
         "lines and broke mouse-scroll. Back to a clean full clear (instant "
@@ -245,71 +253,163 @@ def _enable_win_ansi():
         pass
 
 
+_MOUSE_ON = False
+_VT_INPUT = not IS_WINDOWS  # Windows: set once VT input (incl. mouse) is enabled
+
+
+def _decode_seq(ch: str, read1):
+    """Decode one keypress from a char + a read1() for the rest of a sequence.
+    Returns a key name, the raw char, or None for a mouse event to ignore
+    (clicks/moves/releases). Wheel up/down map to 'up'/'down'."""
+    if ch == "\x1b":
+        ch2 = read1()
+        if ch2 == "[":
+            ch3 = read1()
+            if ch3 == "A":
+                return "up"
+            if ch3 == "B":
+                return "down"
+            if ch3 == "C":
+                return "right"
+            if ch3 == "D":
+                return "left"
+            if ch3 == "<":  # SGR mouse: ESC [ < b ; x ; y (M|m)
+                seq = ""
+                while True:
+                    c = read1()
+                    if c == "" or c in ("M", "m"):
+                        break
+                    seq += c
+                try:
+                    btn = int(seq.split(";")[0])
+                except (ValueError, IndexError):
+                    return None
+                if btn == 64:        # wheel up
+                    return "up"
+                if btn == 65:        # wheel down
+                    return "down"
+                return None          # any other mouse event: ignore
+            return "esc"
+        return "esc"
+    if ch in ("\r", "\n"):
+        return "enter"
+    if ch in ("\x7f", "\x08"):
+        return "backspace"
+    if ch in ("\x03", "\x04"):
+        return "quit"
+    return ch
+
+
 def read_key() -> str:
-    """Read a single keypress, handling arrow keys and regular chars."""
-    if IS_WINDOWS:
-        return _read_key_windows()
-    return _read_key_unix()
+    """Read a keypress (arrows, wheel-as-up/down, chars). Ignores other mouse."""
+    while True:
+        k = _read_key_windows() if IS_WINDOWS else _read_key_unix()
+        if k is not None:
+            return k
 
 
-def _read_key_windows() -> str:
-    """Windows key reader using msvcrt."""
+def _read_key_windows():
+    """Windows key reader. Uses VT-sequence decoding when VT input is on (so the
+    mouse wheel works); otherwise the classic msvcrt special-key codes."""
+    if _VT_INPUT:
+        ch = msvcrt.getwch()
+        return _decode_seq(ch, msvcrt.getwch)
     ch = msvcrt.getwch()
     if ch in ("\x00", "\xe0"):  # special key prefix
         ch2 = msvcrt.getwch()
-        if ch2 == "H":
-            return "up"
-        elif ch2 == "P":
-            return "down"
-        elif ch2 == "M":
-            return "right"
-        elif ch2 == "K":
-            return "left"
-        return "esc"
-    elif ch == "\r":
+        return {"H": "up", "P": "down", "M": "right", "K": "left"}.get(ch2, "esc")
+    if ch == "\r":
         return "enter"
-    elif ch == "\x08":  # Backspace
+    if ch == "\x08":
         return "backspace"
-    elif ch == "\x03":  # Ctrl-C
+    if ch in ("\x03", "\x04"):
         return "quit"
-    elif ch == "\x04":  # Ctrl-D
-        return "quit"
-    elif ch == "\x1b":
+    if ch == "\x1b":
         return "esc"
     return ch
 
 
-def _read_key_unix() -> str:
-    """Unix key reader using termios."""
+def _read_key_unix():
+    """Unix key reader using termios; decodes arrows and the mouse wheel."""
     fd = sys.stdin.fileno()
     old = termios.tcgetattr(fd)
     try:
         tty.setraw(fd)
-        ch = sys.stdin.read(1)
-        if ch == "\x1b":
-            ch2 = sys.stdin.read(1)
-            if ch2 == "[":
-                ch3 = sys.stdin.read(1)
-                if ch3 == "A":
-                    return "up"
-                elif ch3 == "B":
-                    return "down"
-                elif ch3 == "C":
-                    return "right"
-                elif ch3 == "D":
-                    return "left"
-            return "esc"
-        elif ch == "\r" or ch == "\n":
-            return "enter"
-        elif ch == "\x7f" or ch == "\x08":
-            return "backspace"
-        elif ch == "\x03":
-            return "quit"
-        elif ch == "\x04":
-            return "quit"
-        return ch
+        return _decode_seq(sys.stdin.read(1), lambda: sys.stdin.read(1))
     finally:
         termios.tcsetattr(fd, termios.TCSADRAIN, old)
+
+
+def enable_mouse():
+    """Ask the terminal to report wheel events to us (so the wheel scrolls the
+    list). On Windows, switch the console to VT input so those reports arrive."""
+    global _MOUSE_ON, _VT_INPUT
+    if IS_WINDOWS:
+        try:
+            import ctypes
+            k = ctypes.windll.kernel32
+            hin = k.GetStdHandle(-10)  # STD_INPUT_HANDLE
+            mode = ctypes.c_ulong()
+            k.GetConsoleMode(hin, ctypes.byref(mode))
+            # +EXTENDED_FLAGS(0x80) +MOUSE_INPUT(0x10) +VT_INPUT(0x200), -QUICK_EDIT(0x40)
+            new = (mode.value | 0x0080 | 0x0010 | 0x0200) & ~0x0040
+            if k.SetConsoleMode(hin, new):
+                _VT_INPUT = True
+        except Exception:
+            _VT_INPUT = False
+    if _VT_ENABLED or not IS_WINDOWS:
+        sys.stdout.write("\033[?1000h\033[?1006h")
+        sys.stdout.flush()
+        _MOUSE_ON = True
+
+
+def disable_mouse():
+    """Stop reporting wheel events — restore native terminal wheel scrolling."""
+    global _MOUSE_ON
+    if _MOUSE_ON:
+        sys.stdout.write("\033[?1000l\033[?1006l")
+        sys.stdout.flush()
+        _MOUSE_ON = False
+
+
+_FULLSCREEN = False
+
+
+def enter_fullscreen():
+    """Switch to the alternate screen + capture the wheel. The alt screen has no
+    scrollback, so list views can't drift out of sync and the page always
+    follows the cursor; the wheel reports come to us so it navigates the list."""
+    global _FULLSCREEN
+    if not _VT_ENABLED:
+        return
+    sys.stdout.write("\033[?1049h\033[2J\033[H")  # alt screen, cleared
+    sys.stdout.flush()
+    _FULLSCREEN = True
+    enable_mouse()
+
+
+def exit_fullscreen():
+    """Leave the alternate screen and stop capturing the wheel — back to the
+    normal scrolling buffer (so article text scrolls natively)."""
+    global _FULLSCREEN
+    disable_mouse()
+    if _FULLSCREEN:
+        sys.stdout.write("\033[?1049l")  # restore normal screen + its scrollback
+        sys.stdout.flush()
+        _FULLSCREEN = False
+
+
+def view_article(post: dict, highlight=None):
+    """Open an article in the normal screen (native wheel-scroll for long text),
+    then return to the full-screen list view."""
+    was_fs = _FULLSCREEN
+    if was_fs:
+        exit_fullscreen()
+    try:
+        show_post_detail(post, highlight)
+    finally:
+        if was_fs:
+            enter_fullscreen()
 
 
 def input_line(prompt: str) -> str:
@@ -1779,7 +1879,7 @@ def paginate_posts(posts: list[dict], highlight: str | None = None, all_posts: l
             if match is not None:
                 set_read(state, open_url, True)  # opening marks read (before detail)
                 save_state(state)
-                show_post_detail(match)
+                view_article(match)
                 state = load_state()  # pick up any in-detail toggle
 
     while True:
@@ -1907,7 +2007,7 @@ def paginate_posts(posts: list[dict], highlight: str | None = None, all_posts: l
             post = display[cursor]
             set_read(state, post.get("url", ""), True)  # opening marks read
             save_state(state)
-            show_post_detail(post, highlight)
+            view_article(post, highlight)
             state = load_state()  # pick up any in-detail read toggle
             bookmarks = load_bookmarks()
             bm_urls = {b.get("url") for b in bookmarks}
@@ -2113,7 +2213,7 @@ def show_bookmarks(posts: list[dict] | None = None):
             full_post = post_by_url.get(bm.get("url"), bm)
             set_read(state, bm.get("url", ""), True)  # opening marks read
             save_state(state)
-            show_post_detail(full_post)
+            view_article(full_post)
             state = load_state()  # pick up any in-detail read toggle
         elif key == "r" and total > 0:
             remove_bookmark(shown[cursor].get("url", ""))
@@ -3182,6 +3282,7 @@ def apply_update_and_relaunch(state: dict, resume: dict):
     set_resume(state, resume)
     save_state(state)
     apply_pending_update_if_any()
+    exit_fullscreen()
     clear_screen()
     if IS_WINDOWS:
         print(c("\n  ✓ Stella has been updated.\n", "accent", "bold"))
@@ -3427,6 +3528,9 @@ def main():
     apply_pending_update_if_any()
     start_update_checker()
 
+    enter_fullscreen()            # own the screen so list views can't drift
+    atexit.register(exit_fullscreen)  # always restore the terminal on exit
+
     state = load_state()
     current = __version__
     # A returning user (prior bookmarks/seen data) upgrading from a pre-1.1.0
@@ -3466,6 +3570,7 @@ def main():
         posts = load_shards(slug)
         site_menu(site, posts, slug=slug, all_loaded=True)
 
+    exit_fullscreen()
     clear_screen()
     print(c("\nBye!\n", "dim"))
 
