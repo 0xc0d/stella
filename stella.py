@@ -1271,7 +1271,9 @@ def multiselect_tags(state: dict, preselected: list) -> list:
 def filter_form(default_site_slug: str | None, bookmark_mode: bool = False) -> FilterSpec | None:
     """Modal form for compound filtering. Returns FilterSpec or None on cancel."""
     spec = FilterSpec()
-    if default_site_slug is not None:
+    if bookmark_mode:
+        spec.site_slugs = []                       # sites irrelevant for bookmarks
+    elif default_site_slug is not None:
         spec.site_slugs = [default_site_slug]
     else:
         spec.site_slugs = [site_slug(s) for s in SITES]
@@ -1451,7 +1453,9 @@ def filter_form(default_site_slug: str | None, bookmark_mode: bool = False) -> F
                     return spec
                 if payload == "reset":
                     spec = FilterSpec()
-                    if default_site_slug is not None:
+                    if bookmark_mode:
+                        spec.site_slugs = []
+                    elif default_site_slug is not None:
                         spec.site_slugs = [default_site_slug]
                     else:
                         spec.site_slugs = [site_slug(s) for s in SITES]
