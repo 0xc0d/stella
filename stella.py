@@ -20,7 +20,13 @@ import random
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
-__version__ = "1.1.10"  # exact v1.0.2 (2026-05-07) code; bump re-ships fixed Stella.cmd (cd into folder after conhost relaunch)
+# Anchor all data files to the script's own folder, not the current working
+# directory. Launchers (and the conhost relaunch in Stella.cmd) can start the
+# process in System32 or %USERPROFILE%, which made every site show "0 data"
+# because posts_*.csv were looked up CWD-relative.
+DATA_DIR = os.path.dirname(os.path.abspath(__file__))
+
+__version__ = "1.1.11"  # exact v1.0.2 render code + data files anchored to DATA_DIR (fixes 0-data regardless of CWD)
 
 GITHUB_OWNER = "0xc0d"
 GITHUB_REPO = "stella"
@@ -362,7 +368,8 @@ def load_csv(path: str) -> list[dict]:
 
 
 def find_latest_csv() -> str | None:
-    csvs = [f for f in os.listdir(".") if f.startswith("posts_") and f.endswith(".csv")]
+    csvs = [os.path.join(DATA_DIR, f) for f in os.listdir(DATA_DIR)
+            if f.startswith("posts_") and f.endswith(".csv")]
     if not csvs:
         return None
     return max(csvs, key=lambda f: os.path.getmtime(f))
@@ -392,7 +399,7 @@ def _text_is_missing(text: str) -> bool:
 
 def csv_path_for_site(slug: str) -> str:
     """Canonical CSV path for a site: posts_{slug}.csv"""
-    return f"posts_{slug}.csv"
+    return os.path.join(DATA_DIR, f"posts_{slug}.csv")
 
 
 def find_csv_for_site(slug: str) -> str | None:
@@ -402,14 +409,14 @@ def find_csv_for_site(slug: str) -> str | None:
         return canonical
     # Fallback: find latest dated file and rename it to canonical
     prefix = f"posts_{slug}_"
-    matches = [f for f in os.listdir(".") if f.startswith(prefix) and f.endswith(".csv")]
+    matches = [f for f in os.listdir(DATA_DIR) if f.startswith(prefix) and f.endswith(".csv")]
     if not matches:
         return None
     def extract_date(fname):
         m = re.search(r'_(\d{8})\.csv$', fname)
         return m.group(1) if m else "00000000"
     latest = max(matches, key=extract_date)
-    os.rename(latest, canonical)
+    os.rename(os.path.join(DATA_DIR, latest), canonical)
     return canonical
 
 
@@ -1008,15 +1015,15 @@ def find_shards(slug: str) -> list[tuple[int, str]]:
     """Return (year, path) tuples for all year shards of a site, sorted oldest→newest."""
     pattern = re.compile(rf"^posts_{re.escape(slug)}_(\d{{4}})\.csv$")
     results = []
-    for f in os.listdir("."):
+    for f in os.listdir(DATA_DIR):
         m = pattern.match(f)
         if m:
-            results.append((int(m.group(1)), f))
+            results.append((int(m.group(1)), os.path.join(DATA_DIR, f)))
     return sorted(results)
 
 
 def shard_path(slug: str, year: int) -> str:
-    return f"posts_{slug}_{year}.csv"
+    return os.path.join(DATA_DIR, f"posts_{slug}_{year}.csv")
 
 
 def load_shards(slug: str, years: list[int] | None = None) -> list[dict]:
@@ -1110,14 +1117,14 @@ def ensure_article_text(post: dict) -> bool:
 
 def migrate_to_shards(slug: str):
     """One-time: split legacy posts_{slug}.csv into per-year shards."""
-    legacy = f"posts_{slug}.csv"
+    legacy = os.path.join(DATA_DIR, f"posts_{slug}.csv")
     if not os.path.exists(legacy) or find_shards(slug):
         return
     try:
         posts = load_csv(legacy)
         if posts:
             save_sharded(posts, slug)
-        os.rename(legacy, f"posts_{slug}.csv.bak")
+        os.rename(legacy, legacy + ".bak")
     except Exception as e:
         print(c(f"  Warning: shard migration failed for {slug}: {e}", "warn"))
 
@@ -1708,7 +1715,7 @@ def show_bookmarks(posts: list[dict] | None = None):
 # Read / unread tracking
 # ---------------------------------------------------------------------------
 
-SEEN_FILE = "stella_seen.json"
+SEEN_FILE = os.path.join(DATA_DIR, "stella_seen.json")
 
 
 def load_seen() -> dict:
