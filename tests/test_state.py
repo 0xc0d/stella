@@ -134,13 +134,13 @@ class FilterHistoryTest(unittest.TestCase):
         hist = stella.get_filter_history(state)
         self.assertEqual([h.tags for h in hist], [["a"], ["b"]])
 
-    def test_capped_at_ten(self):
+    def test_capped_at_five(self):
         state = {}
-        for i in range(14):
+        for i in range(8):
             stella.record_filter(state, stella.FilterSpec(title_words=[f"w{i}"]), self.path)
         hist = stella.get_filter_history(state)
-        self.assertEqual(len(hist), 10)
-        self.assertEqual(hist[0].title_words, ["w13"])  # newest
+        self.assertEqual(len(hist), 5)
+        self.assertEqual(hist[0].title_words, ["w7"])  # newest
 
     def test_corrupt_entry_skipped(self):
         state = {"__meta__": {"filter_history": [{"tags": ["ok"]}, "garbage", 42]}}
