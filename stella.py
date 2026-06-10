@@ -20,7 +20,7 @@ import random
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
-__version__ = "1.1.12"  # v1.1.0 feature set on the proven-good render, + DATA_DIR data fix, safe (no-relaunch) update, strong dedup
+__version__ = "1.1.13"  # filter history cap 5 -> 10 (remember last 10 filters)
 
 GITHUB_OWNER = "0xc0d"
 GITHUB_REPO = "stella"
@@ -2250,7 +2250,7 @@ def clear_resume(state: dict):
     _meta(state).pop("resume", None)
 
 
-_FILTER_HISTORY_MAX = 5
+_FILTER_HISTORY_MAX = 10
 
 
 def get_filter_history(state: dict) -> list:
@@ -2265,7 +2265,7 @@ def get_filter_history(state: dict) -> list:
 
 
 def record_filter(state: dict, spec: "FilterSpec", path: str = STATE_FILE):
-    """Remember an applied filter (newest first, deduped, capped at 5).
+    """Remember an applied filter (newest first, deduped, capped at 10).
 
     Site-only specs carry no real constraints, so they aren't recorded."""
     if spec.is_empty():
